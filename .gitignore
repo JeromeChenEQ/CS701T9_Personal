@@ -1,0 +1,10 @@
+runs/
+__pycache__/
+.pytest_cache/
+
+# data, outputs and local files: never commit
+cs701-sar-course-data/
+*.zip
+*.out
+*.pt
+Miniconda3-*.sh
