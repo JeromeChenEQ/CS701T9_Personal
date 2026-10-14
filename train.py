@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -19,7 +20,7 @@ from sarbench.model import MultiTaskModel
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--data', type=Path, default=Path(__file__).resolve().parents[1] / 'dataset' / 'SARFact-Course-20K')
+    p.add_argument('--data', type=Path, default=Path(__file__).resolve().parent / 'cs701-sar-course-data')
     p.add_argument('--backbone', required=True, choices=['vit', 'terramind', 'sam2'],
                    help='sam2: SAM2 Hiera-B+ (multi-scale; needs --adapt full, or lora with --lora-targets all)')
     p.add_argument('--init', required=True, choices=['pretrained', 'scratch'])
@@ -39,6 +40,8 @@ def parse_args():
     p.add_argument('--det-fusion', action='store_true',
                    help="add the detector's per-class scores to the classification logits (learned weight per class)")
     p.add_argument('--rot90', action='store_true', help='augment training images with random 90-degree rotations')
+    p.add_argument('--rotate-max', type=float, default=0.0,
+                   help='augment training images with a random rotation in [-DEG, DEG] degrees (0: off)')
     p.add_argument('--intensity-jitter', action='store_true',
                    help='augment training images with mild random gamma, contrast and brightness changes')
     p.add_argument('--adapt-mlp', action='store_true',
@@ -54,7 +57,12 @@ def parse_args():
                    help='train the last N backbone blocks in full (no adapters on them); the others keep adapters')
     p.add_argument('--unfrozen-lr', type=float, default=2e-5,
                    help='for the unfrozen blocks (pretrained weights: gentler than the adapters, as in full fine-tuning)')
+    p.add_argument('--ema-decay', type=float, default=0.0,
+                   help='also keep an exponential moving average of the trainable weights with this decay per '
+                        'optimizer step, e.g. 0.9995 (0: off); validated next to the plain weights')
     p.add_argument('--eval-every', type=int, default=4, help='validate every N epochs, and after the last one')
+    p.add_argument('--checkpoint-every', type=int, default=1,
+                   help='save checkpoint.pt (what --resume continues from) every N epochs, and at every validation')
     p.add_argument('--workers', type=int, default=8)
     p.add_argument('--limit', type=int, help='use only the first N images of every split (quick checks)')
     p.add_argument('--seed', type=int, default=0)
@@ -97,6 +105,43 @@ def build_model(args, pretrained):
                           detail_branch=option('detail_branch', False), score_thresh=option('score_thresh', 0.05))
 
 
+class EMA:
+    """Exponential moving average of a model's trainable weights, w_ema <- d w_ema + (1 - d) w after every
+    optimizer step. Frozen weights never change, so the averaged model is the same network with other values in
+    its trainable weights: one model, one forward pass per image."""
+
+    def __init__(self, model, decay):
+        self.decay = decay
+        self.params = {name: p for name, p in model.named_parameters() if p.requires_grad}
+        self.shadow = {name: p.detach().clone() for name, p in self.params.items()}
+
+    @torch.no_grad()
+    def update(self):
+        for name, p in self.params.items():
+            self.shadow[name].lerp_(p.detach(), 1 - self.decay)
+
+    @contextmanager
+    def applied(self):
+        """Inside the block the model holds the averaged weights; afterwards its own again."""
+        backup = {name: p.detach().clone() for name, p in self.params.items()}
+        with torch.no_grad():
+            for name, p in self.params.items():
+                p.copy_(self.shadow[name])
+        try:
+            yield
+        finally:
+            with torch.no_grad():
+                for name, p in self.params.items():
+                    p.copy_(backup[name])
+
+    def state_dict(self):
+        return self.shadow
+
+    def load_state_dict(self, shadow):
+        for name, value in shadow.items():
+            self.shadow[name].copy_(value)
+
+
 def log(message, file):
     """Print to the console and to the run's log.txt."""
     print(message, flush=True)
@@ -108,7 +153,7 @@ def make_loader(args, split):
     augmented."""
     train = split == 'train'
     dataset = SARMultiTask(args.data, split, train=train, limit=args.limit, rot90=args.rot90,
-                           intensity_jitter=args.intensity_jitter)
+                           intensity_jitter=args.intensity_jitter, rotate_max=args.rotate_max)
     return DataLoader(dataset, args.batch_size // args.accum_steps, shuffle=train, num_workers=args.workers, collate_fn=collate,
                       persistent_workers=train and args.workers > 0)  # training workers live across epochs
 
@@ -120,9 +165,10 @@ def lr_factor(step, warmup, total):
     return 0.5 * (1 + math.cos(math.pi * (step - warmup) / max(total - warmup, 1)))  # --epochs 1: no decay phase
 
 
-def train_one_epoch(model, loader, optimizer, schedule, epoch, log_file, accum_steps, label_smoothing):
+def train_one_epoch(model, loader, optimizer, schedule, epoch, log_file, accum_steps, label_smoothing, ema=None):
     """One pass over the training set; the loss is cross-entropy plus the four Faster R-CNN losses. Gradients of
-    `accum_steps` micro-batches are averaged before each optimizer step, which equals one step on their union."""
+    `accum_steps` micro-batches are averaged before each optimizer step, which equals one step on their union.
+    ema: an EMA updated after every optimizer step, or None."""
     model.train()
     start, seen = time.time(), 0
     optimizer.zero_grad()
@@ -139,6 +185,8 @@ def train_one_epoch(model, loader, optimizer, schedule, epoch, log_file, accum_s
             optimizer.step()
             schedule.step()
             optimizer.zero_grad()
+            if ema is not None:
+                ema.update()
         seen += len(images)
         if step % 50 == 0 or step == len(loader):
             parts = ' '.join(f'{name} {value.item():.3f}' for name, value in losses.items())
@@ -172,6 +220,11 @@ def headline(metrics):
     return ' '.join(f'{k} {metrics[k]:.4f}' for k in ('accuracy', 'macro_f1', 'balanced_accuracy', 'mAP', 'AP50'))
 
 
+def delta_m(metrics, f1_ref=0.9331, map_ref=0.2613):
+    """Δm in % against the reference ViT-B/16 + LoRA on the Codabench val split (macro-F1 93.31, mAP 26.13)."""
+    return 50 * ((metrics['macro_f1'] - f1_ref) / f1_ref + (metrics['mAP'] - map_ref) / map_ref)
+
+
 def main():
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -181,12 +234,14 @@ def main():
     suffixes += [f'ls{args.label_smoothing:g}'] if args.label_smoothing else []
     suffixes += ['detfusion'] if args.det_fusion else []
     suffixes += ['rot90'] if args.rot90 else []
+    suffixes += [f'rot{args.rotate_max:g}'] if args.rotate_max else []
     suffixes += ['jitter'] if args.intensity_jitter else []
     suffixes += ['mlp'] if args.adapt_mlp else []
     suffixes += ['detail'] if args.detail_branch else []
     suffixes += ['all'] if args.lora_targets == 'all' else []
     suffixes += [f'r{args.lora_rank}'] if args.adapt == 'lora' and args.lora_rank != 16 else []
     suffixes += [f'unfreeze{args.unfreeze_last}'] if args.unfreeze_last else []
+    suffixes += [f'ema{args.ema_decay:g}'] if args.ema_decay else []
     suffixes += [f'st{args.score_thresh:g}'] if args.score_thresh != 0.05 else []
     run_dir = run_dir.with_name('_'.join([run_dir.name, *suffixes]))
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -227,9 +282,13 @@ def main():
     warmup, total = steps_per_epoch, args.epochs * steps_per_epoch  # one epoch of warmup
     schedule = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: lr_factor(step, warmup, total))
 
-    # Train, validating every --eval-every epochs; the reported model is the last-epoch model. After every
-    # validation the whole training state goes to checkpoint.pt, which --resume continues from.
+    # Train, validating every --eval-every epochs; the reported model is the last-epoch model (model.pt, and with
+    # --ema-decay also its averaged weights, model_ema.pt). The validated weights with the best Δm, plain or
+    # averaged, are also kept (best.pt). Every --checkpoint-every epochs and after every validation the whole
+    # training state goes to checkpoint.pt, which --resume continues from.
+    ema = EMA(model, args.ema_decay) if args.ema_decay else None
     history, first_epoch, earlier_seconds = [], 1, 0.0
+    best = {'delta_m': -math.inf, 'epoch': None, 'weights': None}
     if resuming:
         # On the CPU: the RNG states must stay CPU tensors; the weights and optimizer state are copied to the GPU
         state = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
@@ -239,21 +298,44 @@ def main():
         torch.set_rng_state(state['torch_rng'])
         torch.cuda.set_rng_state(state['cuda_rng'])
         history, first_epoch, earlier_seconds = state['history'], state['epoch'] + 1, state['train_seconds']
+        best = state.get('best', best)  # checkpoints of older runs have no best model
+        if ema is not None:
+            ema.load_state_dict(state['ema'])
         log(f"resumed from {checkpoint_path} after epoch {state['epoch']}", log_file)
+
+    def keep_if_best(metrics, epoch, weights):
+        """Save the model's current weights as best.pt if their Δm beats every earlier validation."""
+        nonlocal best
+        if best['epoch'] is None or delta_m(metrics) > best['delta_m']:  # the first validation always counts
+            best = {'delta_m': delta_m(metrics), 'epoch': epoch, 'weights': weights}
+            torch.save(model.state_dict(), run_dir / 'best.tmp')
+            (run_dir / 'best.tmp').replace(run_dir / 'best.pt')
+            log(f'epoch {epoch}: best so far ({weights} weights), saved best.pt', log_file)
+
     start = time.time()
     for epoch in range(first_epoch, args.epochs + 1):
         train_one_epoch(model, train_loader, optimizer, schedule, epoch, log_file, args.accum_steps,
-                        args.label_smoothing)
-        if epoch % args.eval_every == 0 or epoch == args.epochs:
+                        args.label_smoothing, ema)
+        validate = epoch % args.eval_every == 0 or epoch == args.epochs
+        if validate:
             val, val_detections = evaluate(model, val_loader, args.data / 'detection' / 'instances_val.json')
-            history.append({'epoch': epoch, 'task_weights': model.task_weights(), **val})
+            history.append({'epoch': epoch, 'task_weights': model.task_weights(), 'delta_m': delta_m(val), **val})
             if model.fusion_weights is not None:
                 history[-1]['fusion_weights'] = model.fusion_weights.detach().tolist()
                 log('fusion weights: ' + ' '.join(f'{w:.3f}' for w in history[-1]['fusion_weights']), log_file)
-            log(f'epoch {epoch} val: {headline(val)}', log_file)
+            log(f'epoch {epoch} val: {headline(val)} delta_m {delta_m(val):+.2f}', log_file)
+            keep_if_best(val, epoch, 'plain')
+            if ema is not None:
+                with ema.applied():
+                    val_ema = evaluate(model, val_loader, args.data / 'detection' / 'instances_val.json')[0]
+                    history[-1]['ema'] = {'delta_m': delta_m(val_ema), **val_ema}
+                    log(f'epoch {epoch} val (EMA): {headline(val_ema)} delta_m {delta_m(val_ema):+.2f}', log_file)
+                    keep_if_best(val_ema, epoch, 'ema')
+        if validate or epoch % args.checkpoint_every == 0:
             state = {'epoch': epoch, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
                      'schedule': schedule.state_dict(), 'torch_rng': torch.get_rng_state(),
-                     'cuda_rng': torch.cuda.get_rng_state(), 'history': history,
+                     'cuda_rng': torch.cuda.get_rng_state(), 'history': history, 'best': best,
+                     'ema': ema.state_dict() if ema is not None else None,
                      'train_seconds': earlier_seconds + time.time() - start}
             torch.save(state, run_dir / 'checkpoint.tmp')
             (run_dir / 'checkpoint.tmp').replace(checkpoint_path)  # rename: a crash mid-save keeps the old one
@@ -272,12 +354,15 @@ def main():
     # Save
     summary = {'args': vars(args), 'parameters': parameters, 'trainable_parameters': trainable,
                'train_hours': train_hours, 'peak_gpu_memory_gb': peak_gb,
-               'val_history': history, 'val': history[-1], 'test': test}
+               'val_history': history, 'val': history[-1], 'best': best, 'test': test}
     (run_dir / 'metrics.json').write_text(json.dumps(summary, indent=2, default=str))
     (run_dir / 'predictions_val.json').write_text(json.dumps(val_detections))
     if has_test:
         (run_dir / 'predictions_test.json').write_text(json.dumps(test_detections))
     torch.save(model.state_dict(), run_dir / 'model.pt')
+    if ema is not None:
+        with ema.applied():
+            torch.save(model.state_dict(), run_dir / 'model_ema.pt')
     checkpoint_path.unlink(missing_ok=True)  # finished: model.pt and metrics.json replace it
 
 

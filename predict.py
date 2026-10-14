@@ -54,6 +54,9 @@ def main():
     p.add_argument('run', type=Path, help='a run folder of train.py (metrics.json and model.pt)')
     p.add_argument('--images', type=Path, required=True, help='images.json of the split to predict')
     p.add_argument('--out', type=Path, default=Path('submission.zip'))
+    p.add_argument('--weights', default='model.pt',
+                   help="file in the run folder: model.pt (last epoch), model_ema.pt (its averaged weights, "
+                        "with --ema-decay) or best.pt (best validated Δm)")
     p.add_argument('--score-thresh', type=float, help="override the run's detection score threshold")
     p.add_argument('--gt', type=Path, help='COCO ground truth of the same images: also print the metrics')
     p.add_argument('--batch-size', type=int, default=8)
@@ -61,8 +64,8 @@ def main():
     args = p.parse_args()
 
     run_args = Namespace(**json.loads((args.run / 'metrics.json').read_text())['args'])
-    model = build_model(run_args, pretrained=False)  # the weights come from model.pt
-    model.load_state_dict(torch.load(args.run / 'model.pt', map_location='cpu'))
+    model = build_model(run_args, pretrained=False)  # the weights come from --weights
+    model.load_state_dict(torch.load(args.run / args.weights, map_location='cpu'))
     if args.score_thresh is not None:
         model.roi_heads.score_thresh = args.score_thresh
     model.cuda().eval()

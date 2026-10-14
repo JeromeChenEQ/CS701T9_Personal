@@ -22,7 +22,8 @@ class SARMultiTask(Dataset):
     An item is (image [1, size, size], label 0..8, target), target = {'boxes': XYXY on the resized
     image, 'labels': 1..9, 'image_id': COCO id, 'orig_size': (h, w)}."""
 
-    def __init__(self, root, split, train=False, size=512, limit=None, rot90=False, intensity_jitter=False):
+    def __init__(self, root, split, train=False, size=512, limit=None, rot90=False, intensity_jitter=False,
+                 rotate_max=0.0):
         self.root = Path(root)
         self.size = size
         self.rot90 = train and rot90  # random multiple of 90 degrees, training only
@@ -35,11 +36,17 @@ class SARMultiTask(Dataset):
             self.annotations[ann['image_id']].append(ann)
         flips = [v2.RandomHorizontalFlip(), v2.RandomVerticalFlip()] if train else []
         jitter = [v2.Lambda(jitter_intensity, tv_tensors.Image)] if train and intensity_jitter else []
+        # Random angle in [-rotate_max, rotate_max] degrees, training only. The square keeps its size (corners
+        # are cut, filled with 0); a box becomes the axis-aligned box around its rotated corners, clamped to the
+        # image, and boxes left with no area are dropped with their labels.
+        rotate = ([v2.RandomRotation(rotate_max, interpolation=v2.InterpolationMode.BILINEAR),
+                   v2.ClampBoundingBoxes(), v2.SanitizeBoundingBoxes()] if train and rotate_max > 0 else [])
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.ConvertBoundingBoxFormat('XYXY'),  # COCO [x, y, w, h] -> [x1, y1, x2, y2]
             v2.Resize((size, size)),  # stretches non-square images; boxes are scaled with the pixels
             *flips,  # overhead imagery has no canonical "up"
+            *rotate,
             v2.ToDtype(torch.float32, scale=True),
             *jitter,  # on [0, 1] intensities, before normalising
             v2.Normalize([MEAN], [STD]),
@@ -56,11 +63,13 @@ class SARMultiTask(Dataset):
         boxes = tv_tensors.BoundingBoxes([a['bbox'] for a in anns], format='XYWH', canvas_size=orig_size,
                                          dtype=torch.float32)  # integer boxes would be truncated by Resize
         image = Image.open(self.root / row['image']).convert('L')  # PIL: torchvision.io cannot read .bmp
-        image, boxes = self.transform(image, boxes)
+        labels = torch.tensor([a['category_id'] for a in anns])
+        # a dict, so SanitizeBoundingBoxes (rotation) finds the labels of the boxes it drops
+        sample = self.transform({'image': image, 'boxes': boxes, 'labels': labels})
+        image, boxes, labels = sample['image'], sample['boxes'], sample['labels']
         if self.rot90:  # with the two flips: all 8 orientations of the square
             image, boxes = rotate90(image, boxes, int(torch.randint(4, ())), self.size)
-        target = {'boxes': boxes, 'labels': torch.tensor([a['category_id'] for a in anns]),
-                  'image_id': info['id'], 'orig_size': orig_size}
+        target = {'boxes': boxes, 'labels': labels, 'image_id': info['id'], 'orig_size': orig_size}
         return image, int(row['label']), target
 
 

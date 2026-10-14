@@ -2,7 +2,7 @@ import csv, json, random
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path.home() / 'cs701-sar-benchmark' / 'cs701-sar-course-data'
+ROOT = Path(__file__).resolve().parent / 'cs701-sar-course-data'
 PREFIX = 'train/'        # e.g. 'train/images/' if images sit in a subfolder
 HOLDOUT = 0.15
 

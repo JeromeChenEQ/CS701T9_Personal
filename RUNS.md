@@ -29,7 +29,7 @@ All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the ref
 ## Commands
 
 Shared settings of runs 1–4 are in `run_best.sh`: TerraMind, MoE-LoRA, Kendall loss weighting, 36 epochs, batch
-16 as 2 × 8 (`--accum-steps 2`), validation every 6 epochs. `DATA=~/cs701-sar-benchmark/cs701-sar-course-data`
+16 as 2 × 8 (`--accum-steps 2`), validation every 6 epochs. `DATA=cs701-sar-course-data` (in this repo)
 below, with our split files from `splits/` copied into `$DATA/classification` and `$DATA/detection`.
 
 ```bash
@@ -79,7 +79,7 @@ Runs that were not submitted, on the holdout:
 ## Notes
 
 - Not in this repo: the dataset, `runs/` (model files ~430 MB each), the submission zips and the training logs.
-- `prepare_data.py` has the data location hard-coded (`~/cs701-sar-benchmark/cs701-sar-course-data`); copying
+- `prepare_data.py` has the data location hard-coded (`cs701-sar-course-data` in this repo); copying
   `splits/` gives the same holdout without running it.
 - `train.py --resume` continues an interrupted run from its last checkpoint (saved at every validation). The first
   SAM2 attempt was lost to an overnight Windows Update (NVIDIA driver install + automatic restart).
