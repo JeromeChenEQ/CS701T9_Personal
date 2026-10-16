@@ -54,6 +54,9 @@ def parse_args():
                    help='light conv branch on the raw image, added to the stride-4 and stride-8 detection features')
     p.add_argument('--score-thresh', type=float, default=0.05,
                    help='drop detections scoring below this (COCO mAP usually gains from a lower value, e.g. 0.001)')
+    p.add_argument('--box-loss', default='smooth_l1', choices=['smooth_l1', 'giou'],
+                   help="box head regression loss: torchvision's smooth L1 on the box offsets, or GIoU on the boxes")
+    p.add_argument('--giou-weight', type=float, default=10.0, help='weight of the GIoU box loss (as mmdetection)')
     p.add_argument('--lora-rank', type=int, default=16, help='rank of the plain LoRA (alpha = 2 x rank)')
     p.add_argument('--lora-targets', default='attn', choices=['attn', 'all'],
                    help='attn: attn.qkv and attn.proj of every ViT block; all: every Linear layer of the backbone')
@@ -106,9 +109,13 @@ def build_model(args, pretrained):
         else:
             add_adapters(backbone, args.adapt, mlp=option('adapt_mlp', False),  # also freezes the backbone
                          unfreeze_last=option('unfreeze_last', 0), rank=option('lora_rank', 16))
-    return MultiTaskModel(backbone, task_routing=args.adapt == 'moelora',
-                          loss_weighting=option('loss_weighting', 'sum'), det_fusion=option('det_fusion', False),
-                          detail_branch=option('detail_branch', False), score_thresh=option('score_thresh', 0.05))
+    model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora',
+                           loss_weighting=option('loss_weighting', 'sum'), det_fusion=option('det_fusion', False),
+                           detail_branch=option('detail_branch', False), score_thresh=option('score_thresh', 0.05),
+                           box_loss=option('box_loss', 'smooth_l1'))
+    if option('box_loss', 'smooth_l1') == 'giou':
+        model.roi_heads.giou_weight = option('giou_weight', 10.0)
+    return model
 
 
 class EMA:
@@ -251,6 +258,7 @@ def main():
     suffixes += [f'r{args.lora_rank}'] if args.adapt == 'lora' and args.lora_rank != 16 else []
     suffixes += [f'unfreeze{args.unfreeze_last}'] if args.unfreeze_last else []
     suffixes += [f'ema{args.ema_decay:g}'] if args.ema_decay else []
+    suffixes += [f'giou{args.giou_weight:g}'] if args.box_loss == 'giou' else []
     suffixes += [f'st{args.score_thresh:g}'] if args.score_thresh != 0.05 else []
     run_dir = run_dir.with_name('_'.join([run_dir.name, *suffixes]))
     run_dir.mkdir(parents=True, exist_ok=True)

@@ -10,10 +10,38 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor, TwoMLPHe
 from torchvision.models.detection.image_list import ImageList
 from torchvision.models.detection.roi_heads import RoIHeads
 from torchvision.models.detection.rpn import RegionProposalNetwork, RPNHead
-from torchvision.ops import FeaturePyramidNetwork, MultiScaleRoIAlign
+from torchvision.ops import FeaturePyramidNetwork, MultiScaleRoIAlign, generalized_box_iou_loss
 from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
 
 from .adapters import set_task
+
+
+class GIoURoIHeads(RoIHeads):
+    """torchvision's RoIHeads with a GIoU loss (Rezatofighi et al., CVPR 2019) on the decoded boxes in place of
+    the smooth L1 loss on the encoded box offsets: COCO mAP averages IoU 0.50-0.95, and GIoU trains the IoU
+    itself. As mmdetection's GIoU Faster R-CNN: loss weight 10, normalised like torchvision's box loss (sum over
+    the positive RoIs / all sampled RoIs). Inference is unchanged."""
+
+    def __init__(self, *args, giou_weight=10.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.giou_weight = giou_weight
+
+    def forward(self, features, proposals, image_shapes, targets=None):
+        if not self.training:
+            return super().forward(features, proposals, image_shapes, targets)
+        proposals, _, labels, regression_targets = self.select_training_samples(proposals, targets)
+        box_features = self.box_head(self.box_roi_pool(features, proposals, image_shapes))
+        class_logits, box_regression = self.box_predictor(box_features)
+        labels, regression_targets, proposals = torch.cat(labels), torch.cat(regression_targets), torch.cat(proposals)
+        loss_classifier = F.cross_entropy(class_logits, labels)
+        positive = torch.where(labels > 0)[0]
+        # the offsets predicted for each positive RoI's ground-truth class; both they and the regression targets
+        # are relative to the RoI, so decoding both with the RoI gives the predicted and the ground-truth box
+        offsets = box_regression.reshape(len(labels), -1, 4)[positive, labels[positive]]
+        predicted = self.box_coder.decode_single(offsets, proposals[positive])
+        truth = self.box_coder.decode_single(regression_targets[positive], proposals[positive])
+        loss_box = self.giou_weight * generalized_box_iou_loss(predicted, truth, reduction='sum') / labels.numel()
+        return [], {'loss_classifier': loss_classifier, 'loss_box_reg': loss_box}
 
 
 class SimpleFeaturePyramid(nn.Module):
@@ -69,7 +97,7 @@ class MultiTaskModel(nn.Module):
     detector's per-class evidence) and Faster R-CNN detections."""
 
     def __init__(self, backbone, task_routing: bool, num_classes=9, loss_weighting='sum', det_fusion=False,
-                 detail_branch=False, score_thresh=0.05):
+                 detail_branch=False, score_thresh=0.05, box_loss='smooth_l1'):
         super().__init__()
         self.backbone = backbone
         self.task_routing = task_routing  # MoE-LoRA: the backbone runs once per task, with that task's routers
@@ -96,7 +124,8 @@ class MultiTaskModel(nn.Module):
             anchors, RPNHead(256, 6), fg_iou_thresh=0.7, bg_iou_thresh=0.3, batch_size_per_image=256,
             positive_fraction=0.5, pre_nms_top_n=dict(training=2000, testing=1000),
             post_nms_top_n=dict(training=2000, testing=1000), nms_thresh=0.7)
-        self.roi_heads = RoIHeads(
+        # box_loss: 'smooth_l1' (torchvision's default) or 'giou'
+        self.roi_heads = {'smooth_l1': RoIHeads, 'giou': GIoURoIHeads}[box_loss](
             MultiScaleRoIAlign(['0', '1', '2', '3'], output_size=7, sampling_ratio=2),
             TwoMLPHead(256 * 7 * 7, 1024), FastRCNNPredictor(1024, num_classes + 1),  # + 1: background
             fg_iou_thresh=0.5, bg_iou_thresh=0.5, batch_size_per_image=512, positive_fraction=0.25,
