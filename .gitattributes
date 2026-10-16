@@ -1,0 +1,6 @@
+# Keep LF line endings in the working tree whichever git or editor touches the files (Windows tools would
+# otherwise write CRLF, and every line of a file would show as changed)
+*.py text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.txt text eol=lf

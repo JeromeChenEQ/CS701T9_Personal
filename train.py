@@ -268,6 +268,12 @@ def main():
     parameters = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f'parameters: {parameters:,} total, {trainable:,} trainable', log_file)
+    # Assignment limits: <= 130 M parameters in the model that predicts, frozen ones included; <= 40 M trainable,
+    # heads included. Over them is fine only for the reference runs (full fine-tuning, from scratch).
+    over = [f'{name} {count / 1e6:.2f} M > {limit} M' for name, count, limit in
+            (('total', parameters, 130), ('trainable', trainable, 40)) if count > limit * 1e6]
+    log(f"WARNING: over the assignment limits: {', '.join(over)}" if over else
+        'within the assignment limits (<= 130 M total, <= 40 M trainable)', log_file)
 
     # Optimizer and schedule: trainable backbone parameters at --backbone-lr, all new modules at --lr, unfrozen
     # pretrained blocks at --unfrozen-lr
