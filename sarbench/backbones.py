@@ -61,9 +61,16 @@ class Hierarchical(nn.Module):
         return self.net(x)
 
 
+# The multi-scale backbones (strides 4-32), by --backbone name: timm model names
+HIERARCHICAL = {
+    'sam2': 'sam2_hiera_base_plus.fb_r896',  # SAM2 Hiera-B+ (Meta), SA-1B / SA-V natural images and video
+    'dinov3_convnext_b': 'convnext_base.dinov3_lvd1689m',  # DINOv3 ConvNeXt-B (Meta), LVD-1689M web images
+}
+
+
 def build_backbone(name, pretrained, drop_path=0.0):
-    """name: 'vit', 'terramind' or 'sam2' (SAM2 Hiera-B+, Meta). pretrained=False builds the same architecture
-    with random weights. drop_path: stochastic depth rate, SAM2 only."""
-    if name == 'sam2':
-        return Hierarchical('sam2_hiera_base_plus.fb_r896', pretrained, drop_path)
+    """name: 'vit', 'terramind', or a multi-scale backbone of HIERARCHICAL. pretrained=False builds the same
+    architecture with random weights. drop_path: stochastic depth rate, multi-scale backbones only."""
+    if name in HIERARCHICAL:
+        return Hierarchical(HIERARCHICAL[name], pretrained, drop_path)
     return {'vit': ViT, 'terramind': TerraMind}[name](pretrained)

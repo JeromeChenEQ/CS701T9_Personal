@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from sarbench.adapters import add_adapters, add_lora_everywhere
-from sarbench.backbones import build_backbone
+from sarbench.backbones import HIERARCHICAL, build_backbone
 from sarbench.data import SARMultiTask, collate, to_original_xywh
 from sarbench.metrics import classification_metrics, detection_metrics
 from sarbench.model import MultiTaskModel
@@ -21,8 +21,9 @@ from sarbench.model import MultiTaskModel
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--data', type=Path, default=Path(__file__).resolve().parent / 'cs701-sar-course-data')
-    p.add_argument('--backbone', required=True, choices=['vit', 'terramind', 'sam2'],
-                   help='sam2: SAM2 Hiera-B+ (multi-scale; needs --adapt full, or lora with --lora-targets all)')
+    p.add_argument('--backbone', required=True, choices=['vit', 'terramind', *HIERARCHICAL],
+                   help='sam2: SAM2 Hiera-B+; dinov3_convnext_b: DINOv3 ConvNeXt-B (both multi-scale; need --adapt '
+                        'full, or lora with --lora-targets all)')
     p.add_argument('--init', required=True, choices=['pretrained', 'scratch'])
     p.add_argument('--adapt', required=True, choices=['full', 'lora', 'moelora'])
     p.add_argument('--epochs', type=int, default=24)
@@ -45,7 +46,7 @@ def parse_args():
     p.add_argument('--scale-jitter', type=float, default=0.0,
                    help='augment training images with a random zoom by a factor in [1 - S, 1 + S] (0: off)')
     p.add_argument('--drop-path', type=float, default=0.0,
-                   help='stochastic depth rate of the last backbone block (sam2 only; 0: off)')
+                   help='stochastic depth rate of the last backbone block (multi-scale backbones only; 0: off)')
     p.add_argument('--intensity-jitter', action='store_true',
                    help='augment training images with mild random gamma, contrast and brightness changes')
     p.add_argument('--adapt-mlp', action='store_true',
@@ -85,12 +86,12 @@ def parse_args():
         p.error('--lora-targets all needs --adapt lora')
     if args.lora_targets == 'all' and (args.adapt_mlp or args.unfreeze_last):
         p.error('--lora-targets all already covers every layer: no --adapt-mlp or --unfreeze-last')
-    if args.backbone == 'sam2' and (args.adapt == 'moelora' or (args.adapt == 'lora' and args.lora_targets != 'all')
-                                    or args.detail_branch or args.det_fusion):
-        p.error('--backbone sam2 needs --adapt full or --adapt lora --lora-targets all, without --detail-branch '
-                'or --det-fusion')
-    if args.drop_path and args.backbone != 'sam2':
-        p.error('--drop-path needs --backbone sam2')
+    if args.backbone in HIERARCHICAL and (args.adapt == 'moelora' or (args.adapt == 'lora' and args.lora_targets != 'all')
+                                          or args.detail_branch or args.det_fusion):
+        p.error(f'--backbone {args.backbone} needs --adapt full or --adapt lora --lora-targets all, without '
+                '--detail-branch or --det-fusion')
+    if args.drop_path and args.backbone not in HIERARCHICAL:
+        p.error('--drop-path needs a multi-scale backbone (' + ', '.join(HIERARCHICAL) + ')')
     if args.batch_size % args.accum_steps:
         p.error('--batch-size must be a multiple of --accum-steps')
     if args.backbone_lr is None:
