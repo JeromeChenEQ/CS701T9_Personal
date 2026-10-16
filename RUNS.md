@@ -1,7 +1,7 @@
 # Submitted runs
 
 The six models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results
-and val leaderboard results. All were trained on one RTX 3060 (12 GB) under WSL2.
+and val leaderboard results. All six were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
 **Best so far: SAM2 Hiera-B+ with LoRA rank 125 on all layers, EMA of the weights, 98 epochs: val Δm +20.06.**
 
@@ -89,6 +89,25 @@ Runs that were not submitted, on the holdout:
 | TerraMind + MoE-LoRA + label smoothing 0.1 + detection→class fusion, 24 ep | 90.15 | 27.37 | no gain; fusion weights stayed near 0 |
 | #1 + 90° rotations + intensity jitter, 36 ep | 92.17 | 26.53 | **90° rotations hurt**: the no-augmentation model scores 12.9 mAP on 90°-rotated holdout images vs 31.3 unrotated (180° and flips: no loss), so SAR orientation carries information |
 | #5 + random rotation ±180° + EMA 0.9995, 80 ep, **stopped after epoch 47** | 92.61 | 19.80 | best: EMA weights at epoch 44 (holdout Δm −12.49). **Any-angle rotation hurts detection badly**: mAP 19.8 vs 33.1 for #5 at epoch 42 (F1 92.6 vs 94.7). EMA beat the plain weights at every validation from epoch 16 on, 8 of 11 (epoch 44: Δm −12.49 vs −13.52; epoch 16: −24.45 vs −32.68); before that the average still carried the early weights |
+
+## Compute
+
+Two PCs, one GPU each; every run uses one GPU. Train times in the tables are wall-clock hours on that GPU
+(validations and checkpoints included), so they are also the run's GPU hours.
+
+| | PC 1 | PC 2 |
+|---|---|---|
+| GPU | NVIDIA GeForce RTX 3060, 12 GB (driver 610.88) | NVIDIA GeForce RTX 3060, 12 GB |
+| CPU | AMD Ryzen 5 5600, 6 cores / 12 threads | not recorded |
+| RAM | 32 GB (16 GB available to WSL2) | 32 GB DDR4 |
+| Storage | NVMe SSD (Lexar NM710, 1 TB) | HDD |
+| OS | Windows 11, Ubuntu 26.04 under WSL2 | not recorded |
+| Runs | runs 1–6, the stopped rotation run, the regularisation run (branch `SAM2-LoRA125-EMA-Reg-e108`) | GIoU run (branch `SAM2-LoRA125-EMA-GIoU-e108`) |
+
+Same software on both (`requirements.txt`: torch 2.9.0, torchvision 0.24.0, timm 1.0.24; CUDA 12.8 wheels) and
+the same holdout split (`splits/`). Training reads the images from disk only until the OS caches them (the
+9,392 train images are about 0.8 GB), so the HDD of PC 2 should slow mainly the first epoch and the per-epoch
+checkpoint writes (~0.9 GB each).
 
 ## Notes
 
