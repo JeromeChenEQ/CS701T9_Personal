@@ -56,6 +56,12 @@ class Hierarchical(nn.Module):
                                      drop_path_rate=drop_path)
         self.channels = self.net.feature_info.channels()
         self.embed_dim = self.channels[-1]
+        # ConvNeXt (DINOv3): under bf16 autocast, cuDNN rejects its 7 x 7 depthwise convs (CUDNN_STATUS_BAD_PARAM,
+        # torch 2.9 / cuDNN 9.10, RTX 3060) on the channels-last-strided maps the blocks pass on; a contiguous copy
+        # of the input avoids it (and is faster than running those convs in fp32). No-op for SAM2.
+        for name, module in self.net.named_modules():
+            if name.endswith('conv_dw'):
+                module.register_forward_pre_hook(lambda module, args: (args[0].contiguous(), *args[1:]))
 
     def forward(self, x):
         return self.net(x)
