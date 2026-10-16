@@ -1,9 +1,9 @@
 # Submitted runs
 
-The five models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results
+The six models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results
 and val leaderboard results. All were trained on one RTX 3060 (12 GB) under WSL2.
 
-**Best so far: SAM2 Hiera-B+ with LoRA rank 125 on all layers, 48 epochs: val Δm +13.24.**
+**Best so far: SAM2 Hiera-B+ with LoRA rank 125 on all layers, EMA of the weights, 98 epochs: val Δm +20.06.**
 
 ## Results
 
@@ -13,7 +13,8 @@ and val leaderboard results. All were trained on one RTX 3060 (12 GB) under WSL2
 | 2 | same, seed 42 | `submission_val_ep36_seed42.zip` | 21.1 M / 106.5 M | 9.04 h | 89.88 | 31.04 | 92.13 | 30.75 | 61.30 | 92.50 | +8.22 |
 | 3 | #1 + detail branch | `submission_val_detail.zip` | 21.6 M / 107.0 M | 11.01 h | 89.76 | 31.75 | 91.63 | 31.07 | 60.94 | 92.01 | +8.55 |
 | 4 | #1 + unfreeze last 2 blocks | `submission_val_unfreeze2.zip` | 35.1 M / 106.3 M | 9.92 h | 91.57 | 31.56 | 92.68 | 30.14 | 60.10 | 93.06 | +7.33 |
-| 5 | **SAM2 Hiera-B+ + LoRA r125 (all layers) + Kendall, 48 ep** | `submission_val_sam2.zip` | **39.0 M / 107.7 M** | 10.88 h | **94.76** | **33.30** | **93.12** | **33.10** | **63.59** | **93.41** | **+13.24** |
+| 5 | SAM2 Hiera-B+ + LoRA r125 (all layers) + Kendall, 48 ep | `submission_val_sam2.zip` | 39.0 M / 107.7 M | 10.88 h | 94.76 | 33.30 | 93.12 | 33.10 | 63.59 | 93.41 | +13.24 |
+| 6 | **#5 + EMA 0.9995, 98 ep** (EMA weights of epoch 98, `best.pt`) | `submission_val_sam2_e98_ema.zip` | **39.0 M / 107.7 M** | 23.89 h | **94.89** | **39.14** | **93.46** | **36.57** | **67.24** | **93.76** | **+20.06** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -45,14 +46,20 @@ bash run_best.sh --data $DATA --unfreeze-last 2 --score-thresh 0.001 --out runs/
 python train.py --backbone sam2 --init pretrained --adapt lora --lora-targets all --lora-rank 125 \
   --loss-weighting kendall --accum-steps 2 --epochs 48 --eval-every 6 --score-thresh 0.001 --workers 4 \
   --data $DATA --out runs/sam2 --resume
+# 6  as 5, plus an EMA of the trainable weights (validated next to the plain weights), 98 epochs, validation
+#    every 4 epochs (git branch SAM2-LoRA125-EMA-e98)
+python train.py --backbone sam2 --init pretrained --adapt lora --lora-targets all --lora-rank 125 \
+  --loss-weighting kendall --ema-decay 0.9995 --accum-steps 2 --epochs 98 --eval-every 4 \
+  --score-thresh 0.001 --workers 4 --out runs/sam2_ema --resume
 ```
 
-Submission zip from a finished run (the `--out` folder plus the run's subfolder name):
+Submission zip from a finished run (the `--out` folder plus the run's subfolder name; `--weights best.pt` is the
+validated weights with the best holdout Δm, plain or EMA, for runs from 6 on):
 
 ```bash
-python predict.py runs/sam2/sam2_pretrained_lora_kendall_all_r125_st0.001 \
-  --images $DATA/val/images.json --score-thresh 0.001 --out submission_val_sam2.zip
-python check_submission.py $DATA/val/images.json submission_val_sam2.zip   # format check before uploading
+python predict.py runs/sam2_ema/sam2_pretrained_lora_kendall_all_r125_ema0.9995_st0.001 --weights best.pt \
+  --images $DATA/val/images.json --score-thresh 0.001 --out submission_val_sam2_e98_ema.zip
+python check_submission.py $DATA/val/images.json submission_val_sam2_e98_ema.zip   # format check before uploading
 ```
 
 ## Findings
@@ -61,6 +68,12 @@ python check_submission.py $DATA/val/images.json submission_val_sam2.zip   # for
   holdout and +4.7 Δm on val over the best TerraMind submission, above the reference full fine-tuning (+11.8 on val, 106 M trainable). Its
   training-set F1 is 100 % (fully memorised), training mAP 42.9 vs holdout 33.3. Holdout mAP gained only +0.2
   between epochs 42 and 48.
+- **EMA + 98 epochs (run 6) over run 5:** +6.8 val Δm, almost all from detection (val mAP 36.57 vs 33.10, F1
+  93.46 vs 93.12). The EMA weights beat the plain ones by +3 to +8.5 holdout Δm from epoch 12 to 64 and by +0.6 to
+  +2.2 from 68 to 76; from epoch 80, with the learning rate near 0, the two were within 0.4. The plain weights fell
+  back between validations three times (by up to 1.0 Δm), the EMA weights never after epoch 4. Holdout Δm rose from +21.5 (epoch 60) to +25.7 (epoch 98), +0.3 over the last 8 epochs. Training
+  classification loss reached 0.000 and the Kendall classification weight grew to 180 (detection: 9.3).
+  The val Δm is 5.7 below the holdout Δm (+25.75), against 1.3 for run 5.
 - **Detail branch:** small, real mAP gain (+0.26 val mAP over the seed mean) but −0.5 F1; net +0.2 Δm for 2 h
   more training. Not adopted.
 - **Unfreezing the last 2 TerraMind blocks:** +0.4 holdout mAP but −0.7 val mAP; worse on val (+7.33).
@@ -82,7 +95,8 @@ Runs that were not submitted, on the holdout:
 - Not in this repo: the dataset, `runs/` (model files ~430 MB each), the submission zips and the training logs.
 - `prepare_data.py` has the data location hard-coded (`cs701-sar-course-data` in this repo); copying
   `splits/` gives the same holdout without running it.
-- `train.py --resume` continues an interrupted run from its last checkpoint (saved at every validation). The first
+- `train.py --resume` continues an interrupted run from its last checkpoint (saved after every epoch since run 6;
+  at every validation before). The first
   SAM2 attempt was lost to an overnight Windows Update (NVIDIA driver install + automatic restart).
 - Pretrained models used: TerraMind-1.0-base (IBM/ESA, via terratorch), SAM2 Hiera-B+ (Meta, timm
   `sam2_hiera_base_plus.fb_r896`), ViT-B/16 ImageNet-21k (timm `vit_base_patch16_224.augreg_in21k`).
