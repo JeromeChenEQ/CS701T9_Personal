@@ -79,6 +79,11 @@ python check_submission.py $DATA/val/images.json submission_val_sam2_e98_ema.zip
 - **Unfreezing the last 2 TerraMind blocks:** +0.4 holdout mAP but −0.7 val mAP; worse on val (+7.33).
   Not adopted.
 - **Lower detection score threshold (0.001 vs 0.05):** +0.16 holdout mAP, no retraining needed.
+- **Regularisation (scale jitter 0.25 + drop path 0.1 + label smoothing 0.1 on #6), stopped after epoch 60:**
+  best holdout classification of any run (F1 95.12) but −2.6 mAP against #6 at the same epoch, net −4.8 holdout
+  Δm; not adopted as a whole. Label smoothing is kept for later runs (the classification gain and a bounded
+  Kendall weight); scale jitter and drop path are the likely cause of the slower detection (not separated).
+  Validation history: `runs/sam2_reg/.../metrics_partial.json` (not in git).
 
 Runs that were not submitted, on the holdout:
 
@@ -89,6 +94,7 @@ Runs that were not submitted, on the holdout:
 | TerraMind + MoE-LoRA + label smoothing 0.1 + detection→class fusion, 24 ep | 90.15 | 27.37 | no gain; fusion weights stayed near 0 |
 | #1 + 90° rotations + intensity jitter, 36 ep | 92.17 | 26.53 | **90° rotations hurt**: the no-augmentation model scores 12.9 mAP on 90°-rotated holdout images vs 31.3 unrotated (180° and flips: no loss), so SAR orientation carries information |
 | #5 + random rotation ±180° + EMA 0.9995, 80 ep, **stopped after epoch 47** | 92.61 | 19.80 | best: EMA weights at epoch 44 (holdout Δm −12.49). **Any-angle rotation hurts detection badly**: mAP 19.8 vs 33.1 for #5 at epoch 42 (F1 92.6 vs 94.7). EMA beat the plain weights at every validation from epoch 16 on, 8 of 11 (epoch 44: Δm −12.49 vs −13.52; epoch 16: −24.45 vs −32.68); before that the average still carried the early weights |
+| #6 + scale jitter 0.25 + drop path 0.1 + label smoothing 0.1, 108 ep, **stopped after epoch 60** (branch `SAM2-LoRA125-EMA-Reg-e108`, 14.24 h) | 95.12 | 34.34 | best: EMA weights at epoch 60, holdout Δm +16.69 vs +21.52 for #6 at epoch 60 (F1 94.74, mAP 36.98). **Classification gains, detection loses**: F1 95.12 is above #6 at any epoch (final 94.89), but mAP stayed 2.6–2.9 behind from epoch 44 on; the EMA Δm gap to #6 was −2.9 at epoch 20, −4.6 at 40, −4.8 at 60. Label smoothing kept the Kendall classification weight at 1.2–2.0 (#6: 180) |
 
 ## Notes
 
