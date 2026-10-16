@@ -23,7 +23,7 @@ class SARMultiTask(Dataset):
     image, 'labels': 1..9, 'image_id': COCO id, 'orig_size': (h, w)}."""
 
     def __init__(self, root, split, train=False, size=512, limit=None, rot90=False, intensity_jitter=False,
-                 rotate_max=0.0):
+                 rotate_max=0.0, scale_jitter=0.0):
         self.root = Path(root)
         self.size = size
         self.rot90 = train and rot90  # random multiple of 90 degrees, training only
@@ -36,17 +36,26 @@ class SARMultiTask(Dataset):
             self.annotations[ann['image_id']].append(ann)
         flips = [v2.RandomHorizontalFlip(), v2.RandomVerticalFlip()] if train else []
         jitter = [v2.Lambda(jitter_intensity, tv_tensors.Image)] if train and intensity_jitter else []
-        # Random angle in [-rotate_max, rotate_max] degrees, training only. The square keeps its size (corners
-        # are cut, filled with 0); a box becomes the axis-aligned box around its rotated corners, clamped to the
-        # image, and boxes left with no area are dropped with their labels.
-        rotate = ([v2.RandomRotation(rotate_max, interpolation=v2.InterpolationMode.BILINEAR),
-                   v2.ClampBoundingBoxes(), v2.SanitizeBoundingBoxes()] if train and rotate_max > 0 else [])
+        # Training only, both keep the size x size square; boxes are clamped to the image afterwards, and boxes
+        # left with no area are dropped with their labels.
+        # Rotation: random angle in [-rotate_max, rotate_max] degrees, corners cut and filled with 0; a box becomes
+        # the axis-aligned box around its rotated corners.
+        # Scale jitter: zoom about the centre by a random factor in [1 - scale_jitter, 1 + scale_jitter]; zooming
+        # in crops the border, zooming out pads it with 0. Boxes scale exactly with the pixels.
+        geometric = []
+        if train and rotate_max > 0:
+            geometric.append(v2.RandomRotation(rotate_max, interpolation=v2.InterpolationMode.BILINEAR))
+        if train and scale_jitter > 0:
+            geometric.append(v2.RandomAffine(degrees=0, scale=(1 - scale_jitter, 1 + scale_jitter),
+                                             interpolation=v2.InterpolationMode.BILINEAR))
+        if geometric:
+            geometric += [v2.ClampBoundingBoxes(), v2.SanitizeBoundingBoxes()]
         self.transform = v2.Compose([
             v2.ToImage(),
             v2.ConvertBoundingBoxFormat('XYXY'),  # COCO [x, y, w, h] -> [x1, y1, x2, y2]
             v2.Resize((size, size)),  # stretches non-square images; boxes are scaled with the pixels
             *flips,  # overhead imagery has no canonical "up"
-            *rotate,
+            *geometric,
             v2.ToDtype(torch.float32, scale=True),
             *jitter,  # on [0, 1] intensities, before normalising
             v2.Normalize([MEAN], [STD]),
@@ -64,7 +73,7 @@ class SARMultiTask(Dataset):
                                          dtype=torch.float32)  # integer boxes would be truncated by Resize
         image = Image.open(self.root / row['image']).convert('L')  # PIL: torchvision.io cannot read .bmp
         labels = torch.tensor([a['category_id'] for a in anns])
-        # a dict, so SanitizeBoundingBoxes (rotation) finds the labels of the boxes it drops
+        # a dict, so SanitizeBoundingBoxes (rotation, scale jitter) finds the labels of the boxes it drops
         sample = self.transform({'image': image, 'boxes': boxes, 'labels': labels})
         image, boxes, labels = sample['image'], sample['boxes'], sample['labels']
         if self.rot90:  # with the two flips: all 8 orientations of the square

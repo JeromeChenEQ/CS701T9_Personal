@@ -42,6 +42,10 @@ def parse_args():
     p.add_argument('--rot90', action='store_true', help='augment training images with random 90-degree rotations')
     p.add_argument('--rotate-max', type=float, default=0.0,
                    help='augment training images with a random rotation in [-DEG, DEG] degrees (0: off)')
+    p.add_argument('--scale-jitter', type=float, default=0.0,
+                   help='augment training images with a random zoom by a factor in [1 - S, 1 + S] (0: off)')
+    p.add_argument('--drop-path', type=float, default=0.0,
+                   help='stochastic depth rate of the last backbone block (sam2 only; 0: off)')
     p.add_argument('--intensity-jitter', action='store_true',
                    help='augment training images with mild random gamma, contrast and brightness changes')
     p.add_argument('--adapt-mlp', action='store_true',
@@ -82,6 +86,8 @@ def parse_args():
                                     or args.detail_branch or args.det_fusion):
         p.error('--backbone sam2 needs --adapt full or --adapt lora --lora-targets all, without --detail-branch '
                 'or --det-fusion')
+    if args.drop_path and args.backbone != 'sam2':
+        p.error('--drop-path needs --backbone sam2')
     if args.batch_size % args.accum_steps:
         p.error('--batch-size must be a multiple of --accum-steps')
     if args.backbone_lr is None:
@@ -93,7 +99,7 @@ def build_model(args, pretrained):
     """The model a run's options describe, on the CPU. Adapters are created on the CPU, so they are added before
     .cuda(). Also used by predict.py on the saved args of a run; options newer than that run get their defaults."""
     option = lambda name, default: getattr(args, name, default)  # noqa: E731
-    backbone = build_backbone(args.backbone, pretrained=pretrained)
+    backbone = build_backbone(args.backbone, pretrained=pretrained, drop_path=option('drop_path', 0.0))
     if args.adapt != 'full':
         if option('lora_targets', 'attn') == 'all':
             add_lora_everywhere(backbone, option('lora_rank', 16))  # also freezes the backbone
@@ -153,7 +159,8 @@ def make_loader(args, split):
     augmented."""
     train = split == 'train'
     dataset = SARMultiTask(args.data, split, train=train, limit=args.limit, rot90=args.rot90,
-                           intensity_jitter=args.intensity_jitter, rotate_max=args.rotate_max)
+                           intensity_jitter=args.intensity_jitter, rotate_max=args.rotate_max,
+                           scale_jitter=args.scale_jitter)
     return DataLoader(dataset, args.batch_size // args.accum_steps, shuffle=train, num_workers=args.workers, collate_fn=collate,
                       persistent_workers=train and args.workers > 0)  # training workers live across epochs
 
@@ -235,6 +242,8 @@ def main():
     suffixes += ['detfusion'] if args.det_fusion else []
     suffixes += ['rot90'] if args.rot90 else []
     suffixes += [f'rot{args.rotate_max:g}'] if args.rotate_max else []
+    suffixes += [f'scale{args.scale_jitter:g}'] if args.scale_jitter else []
+    suffixes += [f'dp{args.drop_path:g}'] if args.drop_path else []
     suffixes += ['jitter'] if args.intensity_jitter else []
     suffixes += ['mlp'] if args.adapt_mlp else []
     suffixes += ['detail'] if args.detail_branch else []

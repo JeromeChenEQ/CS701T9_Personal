@@ -48,10 +48,12 @@ class Hierarchical(nn.Module):
     nn.Linear (sarbench.adapters.add_lora_everywhere), and the detector gets a standard FPN."""
     multiscale = True
 
-    def __init__(self, model_name, pretrained: bool):
+    def __init__(self, model_name, pretrained: bool, drop_path=0.0):
         super().__init__()
-        # in_chans=1: timm sums the RGB weights of the first conv
-        self.net = timm.create_model(model_name, pretrained=pretrained, features_only=True, in_chans=1)
+        # in_chans=1: timm sums the RGB weights of the first conv. drop_path: stochastic depth, rising linearly
+        # to this rate in the last block (training only; a regulariser even with the weights frozen)
+        self.net = timm.create_model(model_name, pretrained=pretrained, features_only=True, in_chans=1,
+                                     drop_path_rate=drop_path)
         self.channels = self.net.feature_info.channels()
         self.embed_dim = self.channels[-1]
 
@@ -59,9 +61,9 @@ class Hierarchical(nn.Module):
         return self.net(x)
 
 
-def build_backbone(name, pretrained):
+def build_backbone(name, pretrained, drop_path=0.0):
     """name: 'vit', 'terramind' or 'sam2' (SAM2 Hiera-B+, Meta). pretrained=False builds the same architecture
-    with random weights."""
+    with random weights. drop_path: stochastic depth rate, SAM2 only."""
     if name == 'sam2':
-        return Hierarchical('sam2_hiera_base_plus.fb_r896', pretrained)
+        return Hierarchical('sam2_hiera_base_plus.fb_r896', pretrained, drop_path)
     return {'vit': ViT, 'terramind': TerraMind}[name](pretrained)
