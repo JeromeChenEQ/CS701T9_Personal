@@ -1,9 +1,10 @@
 # Submitted runs
 
-The six models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results
-and val leaderboard results. All six were trained on PC 1 (see [Compute](#compute)), one GPU per run.
+The models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results and val
+leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
-**Best so far: SAM2 Hiera-B+ with LoRA rank 125 on all layers, EMA of the weights, 98 epochs: val Δm +20.06.**
+**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA
+(epoch 64 of 108, submitted mid-run): val Δm +39.13.**
 
 ## Results
 
@@ -14,13 +15,18 @@ and val leaderboard results. All six were trained on PC 1 (see [Compute](#comput
 | 3 | #1 + detail branch | `submission_val_detail.zip` | 21.6 M / 107.0 M | 11.01 h | 89.76 | 31.75 | 91.63 | 31.07 | 60.94 | 92.01 | +8.55 |
 | 4 | #1 + unfreeze last 2 blocks | `submission_val_unfreeze2.zip` | 35.1 M / 106.3 M | 9.92 h | 91.57 | 31.56 | 92.68 | 30.14 | 60.10 | 93.06 | +7.33 |
 | 5 | SAM2 Hiera-B+ + LoRA r125 (all layers) + Kendall, 48 ep | `submission_val_sam2.zip` | 39.0 M / 107.7 M | 10.88 h | 94.76 | 33.30 | 93.12 | 33.10 | 63.59 | 93.41 | +13.24 |
-| 6 | **#5 + EMA 0.9995, 98 ep** (EMA weights of epoch 98, `best.pt`) | `submission_val_sam2_e98_ema.zip` | **39.0 M / 107.7 M** | 23.89 h | **94.89** | **39.14** | **93.46** | **36.57** | **67.24** | **93.76** | **+20.06** |
+| 6 | #5 + EMA 0.9995, 98 ep (EMA weights of epoch 98, `best.pt`) | `submission_val_sam2_e98_ema.zip` | 39.0 M / 107.7 M | 23.89 h | 94.89 | 39.14 | 93.46 | 36.57 | 67.24 | 93.76 | +20.06 |
+| 7 | **DINOv3 ConvNeXt-B + LoRA r125 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 108 ep: EMA weights of epoch 64**, submitted while training ² | `submission_val_dinov3_ep64.zip` | **40.0 M / 127.5 M** | ~15.5 h to epoch 64 | **96.13** | **48.69** | **95.61** | **45.94** | **74.52** | **95.86** | **+39.13** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
 
 ¹ Run 1 was trained with the default detection score threshold 0.05 (holdout mAP 31.12) and submitted at 0.001;
 31.28 is its holdout mAP at 0.001. All other runs used 0.001 throughout.
+
+² Run 7's epoch-64 `best.pt` was copied to `best_ep64.pt` and predicted on the CPU in fp32 (`predict.py --device
+cpu`) while training continued on the GPU; holdout numbers are from training's bf16 validation. Exact trainable
+count 39,968,859 (limit 40 M).
 
 - **Holdout:** our 15 % stratified split of the train set (1,408 images; `splits/`, made by `prepare_data.py`,
   seed 0). Same split for every run.
@@ -51,6 +57,14 @@ python train.py --backbone sam2 --init pretrained --adapt lora --lora-targets al
 python train.py --backbone sam2 --init pretrained --adapt lora --lora-targets all --lora-rank 125 \
   --loss-weighting kendall --ema-decay 0.9995 --accum-steps 2 --epochs 98 --eval-every 4 \
   --score-thresh 0.001 --workers 4 --out runs/sam2_ema --resume
+# 7  DINOv3 ConvNeXt-B, LoRA rank 125 on all 72 Linear layers, GIoU box loss, label smoothing 0.1, EMA, 108 epochs
+#    (git branch DINOv3CNB-LoRA125-EMA-GIoU-LS-e108); submitted: EMA weights of epoch 64, predicted on the CPU
+python train.py --backbone dinov3_convnext_b --init pretrained --adapt lora --lora-targets all --lora-rank 125 \
+  --loss-weighting kendall --ema-decay 0.9995 --box-loss giou --label-smoothing 0.1 --accum-steps 2 --epochs 108 \
+  --eval-every 4 --score-thresh 0.001 --workers 4 --out runs/dinov3 --resume
+cp runs/dinov3/<run>/best.pt runs/dinov3/<run>/best_ep64.pt   # right after the epoch-64 validation
+python predict.py runs/dinov3/<run> --weights best_ep64.pt --images $DATA/val/images.json --score-thresh 0.001 \
+  --device cpu --threads 6 --batch-size 4 --workers 2 --out submission_val_dinov3_ep64.zip
 ```
 
 Submission zip from a finished run (the `--out` folder plus the run's subfolder name; `--weights best.pt` is the
@@ -63,6 +77,13 @@ python check_submission.py $DATA/val/images.json submission_val_sam2_e98_ema.zip
 ```
 
 ## Findings
+
+- **DINOv3 ConvNeXt-B (run 7) nearly doubles Δm over SAM2 (run 6):** val +39.13 vs +20.06, from both tasks (val
+  mAP 45.94 vs 36.57, F1 95.61 vs 93.46), already at epoch 64 of 108. It also changes GIoU and label smoothing, but
+  GIoU alone on SAM2 was level with run 6 at epoch 36 (holdout Δm +11.69 vs +12.73, EMA) and label smoothing
+  alone mostly moved classification (+0.4 holdout F1), so the backbone carries most of the gain. Holdout − val gap:
+  5.56 Δm (run 6: 5.7), so the holdout still predicts val well. Training classification loss sat at label
+  smoothing's floor (0.485) from epoch 24 while holdout mAP kept rising (45.8 at epoch 44 → 48.7 at 64).
 
 - **SAM2 Hiera-B+ (multi-scale, strides 4–32) beats every TerraMind variant** by about +4 F1 and +2 mAP on the
   holdout and +4.7 Δm on val over the best TerraMind submission, above the reference full fine-tuning (+11.8 on val, 106 M trainable). Its
