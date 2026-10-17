@@ -44,7 +44,8 @@ settings (new options are off by default, so later branches reproduce earlier ru
 | not submitted: rotation ±180° | `SAM2-LoRA125-Rot180-EMA-e80` |
 | not submitted: regularisation | `SAM2-LoRA125-EMA-Reg-e108` |
 | in progress: GIoU on SAM2 (PC 2) | `SAM2-LoRA125-EMA-GIoU-e108` |
-| planned: Swin-B (PC 2), 96 ep | `SwinB-LoRA112-EMA-GIoU-LS-e96` |\n| planned: DINOv3 ConvNeXt-B + Cascade R-CNN (PC 1), 96 ep | `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96` |
+| planned: Swin-B (PC 2), 96 ep | `SwinB-LoRA112-EMA-GIoU-LS-e96` |
+| planned: DINOv3 ConvNeXt-B + Cascade R-CNN (PC 1), 96 ep | `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96` |
 
 ## Commands
 
