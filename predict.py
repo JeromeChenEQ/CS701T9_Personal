@@ -61,14 +61,23 @@ def main():
     p.add_argument('--gt', type=Path, help='COCO ground truth of the same images: also print the metrics')
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--workers', type=int, default=4)
+    p.add_argument('--device', default='cuda', choices=['cuda', 'cpu'],
+                   help='cpu: predict without the GPU, in fp32 (e.g. while a training run holds the GPU memory)')
+    p.add_argument('--threads', type=int, help='CPU threads for --device cpu (default: torch default)')
     args = p.parse_args()
 
-    run_args = Namespace(**json.loads((args.run / 'metrics.json').read_text())['args'])
+    # The run's options: metrics.json once training has finished, else the first line of its log.txt (written
+    # at the start), so a run still training can be predicted from its best.pt
+    metrics = args.run / 'metrics.json'
+    run_args = Namespace(**(json.loads(metrics.read_text())['args'] if metrics.exists() else
+                            json.loads((args.run / 'log.txt').read_text().splitlines()[0])))
     model = build_model(run_args, pretrained=False)  # the weights come from --weights
     model.load_state_dict(torch.load(args.run / args.weights, map_location='cpu'))
     if args.score_thresh is not None:
         model.roi_heads.score_thresh = args.score_thresh
-    model.cuda().eval()
+    if args.device == 'cpu' and args.threads:
+        torch.set_num_threads(args.threads)
+    model.to(args.device).eval()
 
     dataset = ImagesToPredict(args.images)
     loader = DataLoader(dataset, args.batch_size, num_workers=args.workers,
@@ -76,8 +85,9 @@ def main():
     labels, detections = {}, []
     with torch.no_grad():
         for images, ids, sizes in loader:
-            with torch.autocast('cuda', dtype=torch.bfloat16):
-                logits, outputs, _ = model(torch.stack(images).cuda())
+            # bf16 on the GPU, as in training; fp32 on the CPU
+            with torch.autocast(args.device, dtype=torch.bfloat16, enabled=args.device == 'cuda'):
+                logits, outputs, _ = model(torch.stack(images).to(args.device))
             for image_id, size, label, out in zip(ids, sizes, logits.argmax(dim=1).tolist(), outputs):
                 labels[image_id] = label  # 0..8
                 boxes = to_original_xywh(out['boxes'], size).tolist()
