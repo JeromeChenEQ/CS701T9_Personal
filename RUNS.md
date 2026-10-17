@@ -3,8 +3,8 @@
 The models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results and val
 leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
-**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA
-(epoch 64 of 108, submitted mid-run): val Δm +39.13.**
+**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA, 108
+epochs (best validated weights: plain, epoch 100): val Δm +39.61.**
 
 ## Results
 
@@ -16,7 +16,8 @@ leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU
 | 4 | #1 + unfreeze last 2 blocks | `submission_val_unfreeze2.zip` | 35.1 M / 106.3 M | 9.92 h | 91.57 | 31.56 | 92.68 | 30.14 | 60.10 | 93.06 | +7.33 |
 | 5 | SAM2 Hiera-B+ + LoRA r125 (all layers) + Kendall, 48 ep | `submission_val_sam2.zip` | 39.0 M / 107.7 M | 10.88 h | 94.76 | 33.30 | 93.12 | 33.10 | 63.59 | 93.41 | +13.24 |
 | 6 | #5 + EMA 0.9995, 98 ep (EMA weights of epoch 98, `best.pt`) | `submission_val_sam2_e98_ema.zip` | 39.0 M / 107.7 M | 23.89 h | 94.89 | 39.14 | 93.46 | 36.57 | 67.24 | 93.76 | +20.06 |
-| 7 | **DINOv3 ConvNeXt-B + LoRA r125 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 108 ep: EMA weights of epoch 64**, submitted while training ² | `submission_val_dinov3_ep64.zip` | **40.0 M / 127.5 M** | ~15.5 h to epoch 64 | **96.13** | **48.69** | **95.61** | **45.94** | **74.52** | **95.86** | **+39.13** |
+| 7 | DINOv3 ConvNeXt-B + LoRA r125 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 108 ep: EMA weights of epoch 64, submitted while training ² | `submission_val_dinov3_ep64.zip` | 40.0 M / 127.5 M | ~15.5 h to epoch 64 | 96.13 | 48.69 | 95.61 | 45.94 | 74.52 | 95.86 | +39.13 |
+| 8 | **#7 finished: `best.pt` = plain weights of epoch 100 of 108** (holdout Δm +46.67; epoch 108: +46.42 plain, +46.53 EMA) | `submission_val_dinov3_final.zip` | **40.0 M / 127.5 M** | 26.35 h | **96.01** | **49.77** | **95.79** | **46.14** | **73.46** | **96.00** | **+39.61** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -79,6 +80,8 @@ python train.py --backbone dinov3_convnext_b --init pretrained --adapt lora --lo
 cp runs/dinov3/<run>/best.pt runs/dinov3/<run>/best_ep64.pt   # right after the epoch-64 validation
 python predict.py runs/dinov3/<run> --weights best_ep64.pt --images $DATA/val/images.json --score-thresh 0.001 \
   --device cpu --threads 6 --batch-size 4 --workers 2 --out submission_val_dinov3_ep64.zip
+# 8  run 7 finished (26.35 h, peak GPU memory 7.0 GB): best.pt, predicted on the GPU
+python predict.py runs/dinov3/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0.001   --out submission_val_dinov3_final.zip
 ```
 
 Submission zip from a finished run (the `--out` folder plus the run's subfolder name; `--weights best.pt` is the
@@ -120,6 +123,11 @@ In run order (score threshold: from run 1 on).
   alone mostly moved classification (+0.4 holdout F1), so the backbone carries most of the gain. Holdout − val gap:
   5.56 Δm (run 6: 5.7), so the holdout still predicts val well. Training classification loss sat at label
   smoothing's floor (0.485) from epoch 24 while holdout mAP kept rising (45.8 at epoch 44 → 48.7 at 64).
+- **Run 7 finished (submission 8) vs its epoch-64 weights (submission 7):** +0.48 val Δm (mAP 46.14 vs 45.94, F1
+  95.79 vs 95.61) for +1.98 holdout Δm, so the holdout − val gap widened from 5.56 to 7.06; holdout Δm was flat
+  at +46.4 to +46.7 from epoch 88 on. Val AP50 fell (73.46 vs 74.52) and the final model outputs far fewer boxes
+  at score threshold 0.001: 6,892 vs 15,555, with 90 val images without any detection (epoch 64: 20); the
+  detection score and NMS thresholds are tuned next, on the holdout, without retraining.
 
 
 Runs that were not submitted, on the holdout:
