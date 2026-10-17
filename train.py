@@ -22,8 +22,8 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--data', type=Path, default=Path(__file__).resolve().parent / 'cs701-sar-course-data')
     p.add_argument('--backbone', required=True, choices=['vit', 'terramind', *HIERARCHICAL],
-                   help='sam2: SAM2 Hiera-B+; dinov3_convnext_b: DINOv3 ConvNeXt-B (both multi-scale; need --adapt '
-                        'full, or lora with --lora-targets all)')
+                   help='sam2: SAM2 Hiera-B+; dinov3_convnext_b: DINOv3 ConvNeXt-B; swin_b: Swin-B ImageNet-22k (all '
+                        'multi-scale; need --adapt full, or lora with --lora-targets all)')
     p.add_argument('--init', required=True, choices=['pretrained', 'scratch'])
     p.add_argument('--adapt', required=True, choices=['full', 'lora', 'moelora'])
     p.add_argument('--epochs', type=int, default=24)
