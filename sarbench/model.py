@@ -5,12 +5,14 @@ from collections import OrderedDict
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torchvision.models.detection._utils import BalancedPositiveNegativeSampler, BoxCoder, Matcher
 from torchvision.models.detection.anchor_utils import AnchorGenerator
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor, TwoMLPHead
 from torchvision.models.detection.image_list import ImageList
 from torchvision.models.detection.roi_heads import RoIHeads
 from torchvision.models.detection.rpn import RegionProposalNetwork, RPNHead
-from torchvision.ops import FeaturePyramidNetwork, MultiScaleRoIAlign, generalized_box_iou_loss
+from torchvision.ops import (FeaturePyramidNetwork, MultiScaleRoIAlign, batched_nms, box_iou, clip_boxes_to_image,
+                             generalized_box_iou_loss, remove_small_boxes)
 from torchvision.ops.feature_pyramid_network import LastLevelMaxPool
 
 from .adapters import set_task
@@ -42,6 +44,103 @@ class GIoURoIHeads(RoIHeads):
         truth = self.box_coder.decode_single(regression_targets[positive], proposals[positive])
         loss_box = self.giou_weight * generalized_box_iou_loss(predicted, truth, reduction='sum') / labels.numel()
         return [], {'loss_classifier': loss_classifier, 'loss_box_reg': loss_box}
+
+
+class CascadeRoIHeads(nn.Module):
+    """Cascade R-CNN box heads (Cai & Vasconcelos, CVPR 2018), in place of torchvision's single RoIHeads: three
+    stages trained at rising IoU thresholds (0.5, 0.6, 0.7), each refining the boxes of the stage before, for
+    tighter boxes at the high IoU thresholds of COCO mAP. As Detectron2 / mmdetection: class-agnostic box
+    regression, box coder weights (10, 10, 5, 5), (20, 20, 10, 10), (30, 30, 15, 15), stage loss weights 1, 0.5,
+    0.25; in training each stage samples 512 RoIs (25 % positive) from the previous stage's refined boxes plus the
+    ground truth. Inference: class scores averaged over the three stages, boxes from the last stage, then
+    torchvision's per-class NMS. width: of each stage's two-layer box head (torchvision's single head: 1024)."""
+
+    def __init__(self, box_roi_pool, num_classes, width=512, box_loss='smooth_l1', giou_weight=10.0,
+                 score_thresh=0.05, nms_thresh=0.5, detections_per_img=100, iou_thresholds=(0.5, 0.6, 0.7),
+                 stage_weights=(1.0, 0.5, 0.25), reg_weights=((10., 10., 5., 5.), (20., 20., 10., 10.), (30., 30., 15., 15.)),
+                 batch_size_per_image=512, positive_fraction=0.25):
+        super().__init__()
+        self.box_roi_pool = box_roi_pool
+        size = box_roi_pool.output_size[0] * box_roi_pool.output_size[1]
+        self.box_heads = nn.ModuleList(TwoMLPHead(256 * size, width) for _ in iou_thresholds)
+        self.cls_scores = nn.ModuleList(nn.Linear(width, num_classes + 1) for _ in iou_thresholds)  # + 1: background
+        self.bbox_preds = nn.ModuleList(nn.Linear(width, 4) for _ in iou_thresholds)  # class-agnostic
+        self.matchers = [Matcher(t, t, allow_low_quality_matches=False) for t in iou_thresholds]
+        self.box_coders = [BoxCoder(w) for w in reg_weights]
+        self.sampler = BalancedPositiveNegativeSampler(batch_size_per_image, positive_fraction)
+        self.stage_weights = stage_weights
+        self.box_loss, self.giou_weight = box_loss, giou_weight
+        self.score_thresh, self.nms_thresh, self.detections_per_img = score_thresh, nms_thresh, detections_per_img
+
+    def sample(self, stage, proposals, targets):
+        """Per image: the proposals plus the ground-truth boxes, matched at this stage's IoU threshold and sampled
+        -> (RoIs, labels 0..num_classes with 0 = background, the matched ground-truth box of each RoI)."""
+        rois, labels, truth = [], [], []
+        for boxes, target in zip(proposals, targets):
+            gt = target['boxes']
+            boxes = torch.cat([boxes, gt])
+            if len(gt) == 0:  # an image whose boxes all left the image under augmentation: only background
+                rois.append(boxes), labels.append(torch.zeros(len(boxes), dtype=torch.int64, device=boxes.device))
+                truth.append(torch.zeros_like(boxes))
+                continue
+            match = self.matchers[stage](box_iou(gt, boxes))
+            label = target['labels'][match.clamp(min=0)].clone()
+            label[match == Matcher.BELOW_LOW_THRESHOLD] = 0
+            rois.append(boxes), labels.append(label), truth.append(gt[match.clamp(min=0)])
+        positive, negative = self.sampler(labels)
+        keep = [torch.where(p | n)[0] for p, n in zip(positive, negative)]
+        return ([r[k] for r, k in zip(rois, keep)], [lab[k] for lab, k in zip(labels, keep)],
+                [t[k] for t, k in zip(truth, keep)])
+
+    def run_stage(self, stage, features, rois, image_shapes):
+        """-> class logits [N, num_classes + 1], refined boxes [N, 4] (clipped to the image), box offsets [N, 4]."""
+        x = self.box_heads[stage](self.box_roi_pool(features, rois, image_shapes))
+        offsets = self.bbox_preds[stage](x)
+        boxes = self.box_coders[stage].decode_single(offsets, torch.cat(rois))
+        boxes = torch.cat([clip_boxes_to_image(b, size) for b, size in
+                           zip(boxes.split([len(r) for r in rois]), image_shapes)])
+        return self.cls_scores[stage](x), boxes, offsets
+
+    def forward(self, features, proposals, image_shapes, targets=None):
+        if self.training:
+            losses = {'loss_classifier': 0.0, 'loss_box_reg': 0.0}
+            for stage, weight in enumerate(self.stage_weights):
+                rois, labels, truth = self.sample(stage, proposals, targets)
+                logits, boxes, offsets = self.run_stage(stage, features, rois, image_shapes)
+                rois_all, labels, truth = torch.cat(rois), torch.cat(labels), torch.cat(truth)
+                positive = labels > 0
+                if self.box_loss == 'giou':
+                    predicted = self.box_coders[stage].decode_single(offsets[positive], rois_all[positive])
+                    box = self.giou_weight * generalized_box_iou_loss(predicted, truth[positive], reduction='sum')
+                else:  # torchvision's smooth L1 on the encoded offsets
+                    target = self.box_coders[stage].encode_single(truth[positive], rois_all[positive])
+                    box = F.smooth_l1_loss(offsets[positive], target, beta=1 / 9, reduction='sum')
+                losses['loss_classifier'] = losses['loss_classifier'] + weight * F.cross_entropy(logits, labels)
+                losses['loss_box_reg'] = losses['loss_box_reg'] + weight * box / labels.numel()
+                proposals = [b.detach() for b in boxes.split([len(r) for r in rois])]  # the next stage's RoIs
+            return [], losses
+        rois, scores = proposals, 0.0
+        for stage in range(len(self.box_heads)):
+            logits, boxes, _ = self.run_stage(stage, features, rois, image_shapes)
+            scores = scores + logits.softmax(dim=-1) / len(self.box_heads)
+            rois = list(boxes.split([len(r) for r in rois]))
+        return self.postprocess(rois, scores.split([len(r) for r in rois])), {}
+
+    def postprocess(self, boxes, scores):
+        """As torchvision's postprocess_detections, with one (class-agnostic) box per RoI for every class."""
+        result = []
+        for b, s in zip(boxes, scores):
+            num_classes = s.shape[1] - 1
+            b = b[:, None].expand(-1, num_classes, 4).reshape(-1, 4)
+            labels = torch.arange(1, num_classes + 1, device=s.device).repeat(len(s))
+            s = s[:, 1:].reshape(-1)  # drop background
+            keep = torch.where(s > self.score_thresh)[0]
+            b, s, labels = b[keep], s[keep], labels[keep]
+            keep = remove_small_boxes(b, min_size=1e-2)
+            b, s, labels = b[keep], s[keep], labels[keep]
+            keep = batched_nms(b, s, labels, self.nms_thresh)[:self.detections_per_img]
+            result.append({'boxes': b[keep], 'scores': s[keep], 'labels': labels[keep]})
+        return result
 
 
 class SimpleFeaturePyramid(nn.Module):
@@ -97,7 +196,8 @@ class MultiTaskModel(nn.Module):
     detector's per-class evidence) and Faster R-CNN detections."""
 
     def __init__(self, backbone, task_routing: bool, num_classes=9, loss_weighting='sum', det_fusion=False,
-                 detail_branch=False, score_thresh=0.05, box_loss='smooth_l1'):
+                 detail_branch=False, score_thresh=0.05, box_loss='smooth_l1', detector='faster_rcnn',
+                 cascade_width=512):
         super().__init__()
         self.backbone = backbone
         self.task_routing = task_routing  # MoE-LoRA: the backbone runs once per task, with that task's routers
@@ -124,12 +224,17 @@ class MultiTaskModel(nn.Module):
             anchors, RPNHead(256, 6), fg_iou_thresh=0.7, bg_iou_thresh=0.3, batch_size_per_image=256,
             positive_fraction=0.5, pre_nms_top_n=dict(training=2000, testing=1000),
             post_nms_top_n=dict(training=2000, testing=1000), nms_thresh=0.7)
-        # box_loss: 'smooth_l1' (torchvision's default) or 'giou'
-        self.roi_heads = {'smooth_l1': RoIHeads, 'giou': GIoURoIHeads}[box_loss](
-            MultiScaleRoIAlign(['0', '1', '2', '3'], output_size=7, sampling_ratio=2),
-            TwoMLPHead(256 * 7 * 7, 1024), FastRCNNPredictor(1024, num_classes + 1),  # + 1: background
-            fg_iou_thresh=0.5, bg_iou_thresh=0.5, batch_size_per_image=512, positive_fraction=0.25,
-            bbox_reg_weights=None, score_thresh=score_thresh, nms_thresh=0.5, detections_per_img=100)
+        # box_loss: 'smooth_l1' (torchvision's default) or 'giou'. detector: 'faster_rcnn' (one box head) or
+        # 'cascade' (three, each cascade_width wide)
+        roi_pool = MultiScaleRoIAlign(['0', '1', '2', '3'], output_size=7, sampling_ratio=2)
+        if detector == 'cascade':
+            self.roi_heads = CascadeRoIHeads(roi_pool, num_classes, width=cascade_width, box_loss=box_loss,
+                                             score_thresh=score_thresh)
+        else:
+            self.roi_heads = {'smooth_l1': RoIHeads, 'giou': GIoURoIHeads}[box_loss](
+                roi_pool, TwoMLPHead(256 * 7 * 7, 1024), FastRCNNPredictor(1024, num_classes + 1),  # + 1: background
+                fg_iou_thresh=0.5, bg_iou_thresh=0.5, batch_size_per_image=512, positive_fraction=0.25,
+                bbox_reg_weights=None, score_thresh=score_thresh, nms_thresh=0.5, detections_per_img=100)
 
     def forward(self, images, targets=None):
         """images [B, 1, H, W], targets: per-image {'boxes' XYXY, 'labels' 1..9} (training only) ->

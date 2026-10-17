@@ -58,6 +58,10 @@ def parse_args():
     p.add_argument('--box-loss', default='smooth_l1', choices=['smooth_l1', 'giou'],
                    help="box head regression loss: torchvision's smooth L1 on the box offsets, or GIoU on the boxes")
     p.add_argument('--giou-weight', type=float, default=10.0, help='weight of the GIoU box loss (as mmdetection)')
+    p.add_argument('--detector', default='faster_rcnn', choices=['faster_rcnn', 'cascade'],
+                   help='faster_rcnn: one box head; cascade: Cascade R-CNN, three box heads at IoU 0.5 / 0.6 / 0.7')
+    p.add_argument('--cascade-width', type=int, default=512,
+                   help="width of each Cascade R-CNN stage's two-layer box head (Faster R-CNN's head: 1024)")
     p.add_argument('--lora-rank', type=int, default=16, help='rank of the plain LoRA (alpha = 2 x rank)')
     p.add_argument('--lora-targets', default='attn', choices=['attn', 'all'],
                    help='attn: attn.qkv and attn.proj of every ViT block; all: every Linear layer of the backbone')
@@ -101,6 +105,8 @@ def parse_args():
                 '--detail-branch or --det-fusion')
     if args.drop_path and args.backbone not in HIERARCHICAL:
         p.error('--drop-path needs a multi-scale backbone (' + ', '.join(HIERARCHICAL) + ')')
+    if args.detector == 'cascade' and args.det_fusion:
+        p.error('--det-fusion needs --detector faster_rcnn')
     if args.batch_size % args.accum_steps:
         p.error('--batch-size must be a multiple of --accum-steps')
     if args.backbone_lr is None:
@@ -125,7 +131,8 @@ def build_model(args, pretrained):
     model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora',
                            loss_weighting=option('loss_weighting', 'sum'), det_fusion=option('det_fusion', False),
                            detail_branch=option('detail_branch', False), score_thresh=option('score_thresh', 0.05),
-                           box_loss=option('box_loss', 'smooth_l1'))
+                           box_loss=option('box_loss', 'smooth_l1'), detector=option('detector', 'faster_rcnn'),
+                           cascade_width=option('cascade_width', 512))
     if option('box_loss', 'smooth_l1') == 'giou':
         model.roi_heads.giou_weight = option('giou_weight', 10.0)
     return model
@@ -272,6 +279,7 @@ def main():
     suffixes += ['dwnorm'] if args.unfreeze_dw_norm else []
     suffixes += [f'ema{args.ema_decay:g}'] if args.ema_decay else []
     suffixes += [f'giou{args.giou_weight:g}'] if args.box_loss == 'giou' else []
+    suffixes += [f'cascade{args.cascade_width}'] if args.detector == 'cascade' else []
     suffixes += [args.train_split] if args.train_split != 'train' else []
     suffixes += [f'st{args.score_thresh:g}'] if args.score_thresh != 0.05 else []
     run_dir = run_dir.with_name('_'.join([run_dir.name, *suffixes]))
