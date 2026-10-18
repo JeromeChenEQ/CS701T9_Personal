@@ -20,6 +20,7 @@ val Δm +41.69.**
 | 7 | DINOv3 ConvNeXt-B + LoRA r125 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 108 ep: EMA weights of epoch 64, submitted while training ² | `submission_val_dinov3_ep64.zip` | 40.0 M / 127.5 M | ~15.5 h to epoch 64 | 96.13 | 48.69 | 95.61 | 45.94 | 74.52 | 95.86 | +39.13 |
 | 8 | #7 finished: `best.pt` = plain weights of epoch 100 of 108 (holdout Δm +46.67; epoch 108: +46.42 plain, +46.53 EMA) | `submission_val_dinov3_final.zip` | 40.0 M / 127.5 M | 26.35 h | 96.01 | 49.77 | 95.79 | 46.14 | 73.46 | 96.00 | +39.61 |
 | 9 | **#8 with the detection thresholds tuned on the holdout: score 0 (was 0.001), NMS IoU 0.8 (was 0.5)**; same weights, inference only | `submission_val_dinov3_final_nms08.zip` | **40.0 M / 127.5 M** | 26.35 h | **96.01** | **50.57** | **95.79** | **47.23** | **74.31** | **96.00** | **+41.69** |
+| 10 | DINOv3 ConvNeXt-B + **Cascade R-CNN** (3 stages, 512 wide) + LoRA r88 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep: **EMA weights of epoch 48**, submitted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep48.zip` | 39.4 M / 127.0 M | ~14 h to epoch 48 | 95.77 | 48.45 | 95.72 | 46.54 | 72.10 | 95.93 | +40.34 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -30,6 +31,10 @@ All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the ref
 ² Run 7's epoch-64 `best.pt` was copied to `best_ep64.pt` and predicted on the CPU in fp32 (`predict.py --device
 cpu`) while training continued on the GPU; holdout numbers are from training's bf16 validation. Exact trainable
 count 39,968,859 (limit 40 M).
+
+³ Run 10 (branch `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96`): `predict_at_epoch.sh` froze the epoch-48 `best.pt`
+and predicted val on the CPU with the thresholds tuned for run 7 (score 0, NMS 0.8); its holdout numbers are from
+training's validation at score 0.001, NMS 0.5. Exact trainable count 39,422,803.
 
 - **Holdout:** our 15 % stratified split of the train set (1,408 images; `splits/`, made by `prepare_data.py`,
   seed 0). Same split for every run.
@@ -106,6 +111,12 @@ python check_submission.py $DATA/val/images.json submission_val_sam2_e98_ema.zip
   at NMS 0.5 by score: 0.001 +46.67, 0.0001 +46.85, 0 +47.08. Score 0 fills every image's 100 boxes (98 holdout
   images had none at 0.001); a looser NMS keeps shifted second boxes that count at COCO's strict IoU thresholds.
   Still one model and one forward pass per image.
+- **Cascade R-CNN on DINOv3 (run 10, mid-run) vs one box head (run 7):** holdout Δm (EMA) ahead at every
+  validation, +3.3 at epoch 12, +5.6 at 28, +3.8 at 40, +2.9 at 48, all from detection (mAP +1.7 to +2.9);
+  holdout F1 0.4–0.5 lower from epoch 32 on, with LoRA rank 88 instead of 125 (the three 512-wide stages take the
+  budget). On val at epoch 48: mAP 46.54 but AP50 72.10 (run 7's final: 47.23 / 74.31), so Cascade gives tighter
+  boxes and fewer loose matches; the score / NMS thresholds were tuned for run 7's single head and get re-tuned
+  on run 10's final model.
 
 - **SAM2 Hiera-B+ (multi-scale, strides 4–32) beats every TerraMind variant** by about +4 F1 and +2 mAP on the
   holdout and +4.7 Δm on val over the best TerraMind submission, above the reference full fine-tuning (+11.8 on val, 106 M trainable). Its
