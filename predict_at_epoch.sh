@@ -8,9 +8,12 @@ RUN=${1%/}; EPOCH=$2; ZIP=$3
 PY=${PY:-python}
 cd "$(dirname "$0")"
 echo "waiting for epoch $EPOCH of $RUN since $(date '+%a %H:%M')"
+# If training stops (crash, or stopped to be resumed), keep waiting: it continues from its checkpoint with --resume
+warned=0
 until grep -q "^epoch $((EPOCH + 1)) iter" "$RUN/log.txt" || [ -f "$RUN/metrics.json" ]; do
-  pgrep -f "python train.py" >/dev/null || { sleep 120; pgrep -f "python train.py" >/dev/null || [ -f "$RUN/metrics.json" ] ||
-    { echo "TRAINING STOPPED before epoch $EPOCH at $(date '+%H:%M'): resume it, then start this again"; exit 1; }; }
+  if pgrep -f "python train.py" >/dev/null; then warned=0
+  elif [ $warned = 0 ]; then echo "WARNING: training not running at $(date '+%a %H:%M'); still waiting for it to resume"; warned=1
+  fi
   sleep 30
 done
 grep -E "^epoch $EPOCH val" "$RUN/log.txt" | cut -c1-150
