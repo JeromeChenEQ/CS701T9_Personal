@@ -4,7 +4,8 @@ The models submitted to the Codabench Phase 1 (val) leaderboard, with their sett
 leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
 **Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA, 108
-epochs (best validated weights: plain, epoch 100): val Δm +39.61.**
+epochs (best validated weights: plain, epoch 100), detection score threshold 0 and NMS 0.8 tuned on the holdout:
+val Δm +41.69.**
 
 ## Results
 
@@ -17,7 +18,8 @@ epochs (best validated weights: plain, epoch 100): val Δm +39.61.**
 | 5 | SAM2 Hiera-B+ + LoRA r125 (all layers) + Kendall, 48 ep | `submission_val_sam2.zip` | 39.0 M / 107.7 M | 10.88 h | 94.76 | 33.30 | 93.12 | 33.10 | 63.59 | 93.41 | +13.24 |
 | 6 | #5 + EMA 0.9995, 98 ep (EMA weights of epoch 98, `best.pt`) | `submission_val_sam2_e98_ema.zip` | 39.0 M / 107.7 M | 23.89 h | 94.89 | 39.14 | 93.46 | 36.57 | 67.24 | 93.76 | +20.06 |
 | 7 | DINOv3 ConvNeXt-B + LoRA r125 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 108 ep: EMA weights of epoch 64, submitted while training ² | `submission_val_dinov3_ep64.zip` | 40.0 M / 127.5 M | ~15.5 h to epoch 64 | 96.13 | 48.69 | 95.61 | 45.94 | 74.52 | 95.86 | +39.13 |
-| 8 | **#7 finished: `best.pt` = plain weights of epoch 100 of 108** (holdout Δm +46.67; epoch 108: +46.42 plain, +46.53 EMA) | `submission_val_dinov3_final.zip` | **40.0 M / 127.5 M** | 26.35 h | **96.01** | **49.77** | **95.79** | **46.14** | **73.46** | **96.00** | **+39.61** |
+| 8 | #7 finished: `best.pt` = plain weights of epoch 100 of 108 (holdout Δm +46.67; epoch 108: +46.42 plain, +46.53 EMA) | `submission_val_dinov3_final.zip` | 40.0 M / 127.5 M | 26.35 h | 96.01 | 49.77 | 95.79 | 46.14 | 73.46 | 96.00 | +39.61 |
+| 9 | **#8 with the detection thresholds tuned on the holdout: score 0 (was 0.001), NMS IoU 0.8 (was 0.5)**; same weights, inference only | `submission_val_dinov3_final_nms08.zip` | **40.0 M / 127.5 M** | 26.35 h | **96.01** | **50.57** | **95.79** | **47.23** | **74.31** | **96.00** | **+41.69** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -68,6 +70,11 @@ python predict.py runs/dinov3/<run> --weights best_ep64.pt --images $DATA/val/im
   --device cpu --threads 6 --batch-size 4 --workers 2 --out submission_val_dinov3_ep64.zip
 # 8  run 7 finished (26.35 h, peak GPU memory 7.0 GB): best.pt, predicted on the GPU
 python predict.py runs/dinov3/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0.001   --out submission_val_dinov3_final.zip
+# 9  as 8, with the thresholds from the holdout sweep (sweep_thresholds.py; results in the run folder's
+#    threshold_sweep*.json)
+python sweep_thresholds.py runs/dinov3/<run> --weights best.pt                      # score {0.001, 0.0001, 0} x NMS {0.4, 0.5, 0.6}
+python sweep_thresholds.py runs/dinov3/<run> --weights best.pt --score-thresh 0 --nms-thresh 0.65 0.7 0.75 0.8 0.85 0.9
+python predict.py runs/dinov3/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_dinov3_final_nms08.zip
 ```
 
 Submission zip from a finished run (the `--out` folder plus the run's subfolder name; `--weights best.pt` is the
@@ -91,7 +98,14 @@ python check_submission.py $DATA/val/images.json submission_val_sam2_e98_ema.zip
   95.79 vs 95.61) for +1.98 holdout Δm, so the holdout − val gap widened from 5.56 to 7.06; holdout Δm was flat
   at +46.4 to +46.7 from epoch 88 on. Val AP50 fell (73.46 vs 74.52) and the final model outputs far fewer boxes
   at score threshold 0.001: 6,892 vs 15,555, with 90 val images without any detection (epoch 64: 20); the
-  detection score and NMS thresholds are tuned next, on the holdout, without retraining.
+  detection score and NMS thresholds were tuned next (submission 9).
+- **Detection thresholds tuned on the holdout (submission 9), no retraining:** with run 7's final weights,
+  score threshold 0 and NMS IoU 0.8 raise holdout Δm from +46.67 to +48.21 (mAP 49.77 → 50.57) and val Δm from
+  +39.61 to +41.69 (mAP 46.14 → 47.23, AP50 73.46 → 74.31); classification is unchanged. Holdout Δm by NMS at
+  score 0: 0.4 +46.70, 0.5 +47.08, 0.6 +47.54, 0.7 +47.85, 0.75 +48.05, **0.8 +48.21**, 0.85 +48.17, 0.9 +47.07;
+  at NMS 0.5 by score: 0.001 +46.67, 0.0001 +46.85, 0 +47.08. Score 0 fills every image's 100 boxes (98 holdout
+  images had none at 0.001); a looser NMS keeps shifted second boxes that count at COCO's strict IoU thresholds.
+  Still one model and one forward pass per image.
 
 - **SAM2 Hiera-B+ (multi-scale, strides 4–32) beats every TerraMind variant** by about +4 F1 and +2 mAP on the
   holdout and +4.7 Δm on val over the best TerraMind submission, above the reference full fine-tuning (+11.8 on val, 106 M trainable). Its
