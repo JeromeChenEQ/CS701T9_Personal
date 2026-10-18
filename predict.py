@@ -49,6 +49,37 @@ class ImagesToPredict(Dataset):
         return image, im['id'], (im['height'], im['width'])
 
 
+def load_run(run, weights, device='cuda', threads=None):
+    """The model of a run folder with the given weights file, in eval mode on device. The run's options come from
+    metrics.json once training has finished, else the first line of its log.txt (written at the start), so a run
+    still training can be predicted from its best.pt."""
+    metrics = run / 'metrics.json'
+    run_args = Namespace(**(json.loads(metrics.read_text())['args'] if metrics.exists() else
+                            json.loads((run / 'log.txt').read_text().splitlines()[0])))
+    model = build_model(run_args, pretrained=False)  # the weights come from the weights file
+    model.load_state_dict(torch.load(run / weights, map_location='cpu'))
+    if device == 'cpu' and threads:
+        torch.set_num_threads(threads)
+    return model.to(device).eval()
+
+
+@torch.no_grad()
+def predict(model, dataset, device='cuda', batch_size=8, workers=4):
+    """-> ({image id: label 0..8}, COCO detections in original pixels with category 1..9)."""
+    loader = DataLoader(dataset, batch_size, num_workers=workers, collate_fn=lambda batch: tuple(zip(*batch)))
+    labels, detections = {}, []
+    for images, ids, sizes in loader:
+        # bf16 on the GPU, as in training; fp32 on the CPU
+        with torch.autocast(device, dtype=torch.bfloat16, enabled=device == 'cuda'):
+            logits, outputs, _ = model(torch.stack(images).to(device))
+        for image_id, size, label, out in zip(ids, sizes, logits.argmax(dim=1).tolist(), outputs):
+            labels[image_id] = label
+            boxes = to_original_xywh(out['boxes'], size).tolist()
+            detections += [{'image_id': image_id, 'category_id': c, 'bbox': b, 'score': s}
+                           for b, c, s in zip(boxes, out['labels'].tolist(), out['scores'].tolist())]
+    return labels, detections
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('run', type=Path, help='a run folder of train.py (metrics.json and model.pt)')
@@ -58,6 +89,8 @@ def main():
                    help="file in the run folder: model.pt (last epoch), model_ema.pt (its averaged weights, "
                         "with --ema-decay) or best.pt (best validated Δm)")
     p.add_argument('--score-thresh', type=float, help="override the run's detection score threshold")
+    p.add_argument('--nms-thresh', type=float,
+                   help="override the box head's per-class NMS IoU threshold (training's default: 0.5)")
     p.add_argument('--gt', type=Path, help='COCO ground truth of the same images: also print the metrics')
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--workers', type=int, default=4)
@@ -66,33 +99,13 @@ def main():
     p.add_argument('--threads', type=int, help='CPU threads for --device cpu (default: torch default)')
     args = p.parse_args()
 
-    # The run's options: metrics.json once training has finished, else the first line of its log.txt (written
-    # at the start), so a run still training can be predicted from its best.pt
-    metrics = args.run / 'metrics.json'
-    run_args = Namespace(**(json.loads(metrics.read_text())['args'] if metrics.exists() else
-                            json.loads((args.run / 'log.txt').read_text().splitlines()[0])))
-    model = build_model(run_args, pretrained=False)  # the weights come from --weights
-    model.load_state_dict(torch.load(args.run / args.weights, map_location='cpu'))
+    model = load_run(args.run, args.weights, args.device, args.threads)
     if args.score_thresh is not None:
         model.roi_heads.score_thresh = args.score_thresh
-    if args.device == 'cpu' and args.threads:
-        torch.set_num_threads(args.threads)
-    model.to(args.device).eval()
-
+    if args.nms_thresh is not None:
+        model.roi_heads.nms_thresh = args.nms_thresh
     dataset = ImagesToPredict(args.images)
-    loader = DataLoader(dataset, args.batch_size, num_workers=args.workers,
-                        collate_fn=lambda batch: tuple(zip(*batch)))
-    labels, detections = {}, []
-    with torch.no_grad():
-        for images, ids, sizes in loader:
-            # bf16 on the GPU, as in training; fp32 on the CPU
-            with torch.autocast(args.device, dtype=torch.bfloat16, enabled=args.device == 'cuda'):
-                logits, outputs, _ = model(torch.stack(images).to(args.device))
-            for image_id, size, label, out in zip(ids, sizes, logits.argmax(dim=1).tolist(), outputs):
-                labels[image_id] = label  # 0..8
-                boxes = to_original_xywh(out['boxes'], size).tolist()
-                detections += [{'image_id': image_id, 'category_id': c, 'bbox': b, 'score': s}  # category 1..9
-                               for b, c, s in zip(boxes, out['labels'].tolist(), out['scores'].tolist())]
+    labels, detections = predict(model, dataset, args.device, args.batch_size, args.workers)
 
     table = io.StringIO()
     writer = csv.writer(table, lineterminator='\n')
