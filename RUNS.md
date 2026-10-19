@@ -21,6 +21,8 @@ val Δm +41.69.**
 | 8 | #7 finished: `best.pt` = plain weights of epoch 100 of 108 (holdout Δm +46.67; epoch 108: +46.42 plain, +46.53 EMA) | `submission_val_dinov3_final.zip` | 40.0 M / 127.5 M | 26.35 h | 96.01 | 49.77 | 95.79 | 46.14 | 73.46 | 96.00 | +39.61 |
 | 9 | **#8 with the detection thresholds tuned on the holdout: score 0 (was 0.001), NMS IoU 0.8 (was 0.5)**; same weights, inference only | `submission_val_dinov3_final_nms08.zip` | **40.0 M / 127.5 M** | 26.35 h | **96.01** | **50.57** | **95.79** | **47.23** | **74.31** | **96.00** | **+41.69** |
 | 10 | DINOv3 ConvNeXt-B + **Cascade R-CNN** (3 stages, 512 wide) + LoRA r88 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep: **EMA weights of epoch 48**, submitted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep48.zip` | 39.4 M / 127.0 M | ~14 h to epoch 48 | 95.77 | 48.45 | 95.72 | 46.54 | 72.10 | 95.93 | +40.34 |
+| 11 | #10 at its best validation: **EMA weights of epoch 64** (= the finished run's `best.pt`), predicted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep64.zip` | 39.4 M / 127.0 M | ~18 h to epoch 64 (26.87 h for 96) | 96.15 | 49.35 | 95.81 | 46.99 | 73.04 | 96.00 | +41.25 |
+| 12 | #10 finished: **EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep96_ema.zip` | 39.4 M / 127.0 M | 26.87 h | 95.81 | 49.00 | 95.90 | 46.77 | 73.10 | 96.07 | +40.88 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -153,6 +155,11 @@ In run order (score threshold: from run 1 on).
   budget). On val at epoch 48: mAP 46.54 but AP50 72.10 (run 7's final: 47.23 / 74.31), so Cascade gives tighter
   boxes and fewer loose matches; the score / NMS thresholds were tuned for run 7's single head and get re-tuned
   on run 10's final model.
+- **Cascade R-CNN, finished (submissions 10–12):** holdout Δm peaked at epoch 64 (+45.94, EMA) and drifted to
+  +45.09 by epoch 96, below run 7's +46.67 (epoch 100), so the early lead was faster learning, not a higher
+  ceiling. On val its best (epoch 64, +41.25) stays 0.44 below run 7's tuned final (+41.69, submission 9), mostly
+  from AP50 (73.04 vs 74.31); not adopted. Best-holdout epoch vs last epoch: 64 beat 96 on the holdout (+0.85)
+  and on val (+0.37), so `best.pt` is the right pick for Phase 2.
 
 
 Runs that were not submitted, on the holdout:
