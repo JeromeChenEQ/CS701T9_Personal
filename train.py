@@ -69,6 +69,12 @@ def parse_args():
                    help='also keep an exponential moving average of the trainable weights with this decay per '
                         'optimizer step, e.g. 0.9995 (0: off); validated next to the plain weights')
     p.add_argument('--eval-every', type=int, default=4, help='validate every N epochs, and after the last one')
+    p.add_argument('--train-split', default='train',
+                   help="split to train on: 'train' (our 85 %%, the holdout 'val' is validated) or 'full' (train + "
+                        "holdout, all 9,392 images; validation on the holdout is then only a sanity check)")
+    p.add_argument('--save-epochs', type=int, nargs='*', default=[],
+                   help='also save the weights after these epochs: model_ep<N>.pt and, with --ema-decay, '
+                        'model_ema_ep<N>.pt (for picking epochs without a holdout)')
     p.add_argument('--checkpoint-every', type=int, default=1,
                    help='save checkpoint.pt (what --resume continues from) every N epochs, and at every validation')
     p.add_argument('--workers', type=int, default=8)
@@ -162,10 +168,9 @@ def log(message, file):
     print(message, file=file, flush=True)
 
 
-def make_loader(args, split):
+def make_loader(args, split, train=False):
     """Micro-batches (--batch-size / --accum-steps images) of `split`; only the training set is shuffled and
     augmented."""
-    train = split == 'train'
     dataset = SARMultiTask(args.data, split, train=train, limit=args.limit, rot90=args.rot90,
                            intensity_jitter=args.intensity_jitter, rotate_max=args.rotate_max,
                            scale_jitter=args.scale_jitter)
@@ -260,6 +265,7 @@ def main():
     suffixes += [f'unfreeze{args.unfreeze_last}'] if args.unfreeze_last else []
     suffixes += [f'ema{args.ema_decay:g}'] if args.ema_decay else []
     suffixes += [f'giou{args.giou_weight:g}'] if args.box_loss == 'giou' else []
+    suffixes += [args.train_split] if args.train_split != 'train' else []
     suffixes += [f'st{args.score_thresh:g}'] if args.score_thresh != 0.05 else []
     run_dir = run_dir.with_name('_'.join([run_dir.name, *suffixes]))
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +275,9 @@ def main():
     log(json.dumps(vars(args), default=str), log_file)
 
     # Data
-    train_loader, val_loader = (make_loader(args, split) for split in ('train', 'val'))
+    train_loader, val_loader = make_loader(args, args.train_split, train=True), make_loader(args, 'val')
+    log(f'training on {len(train_loader.dataset):,} images ({args.train_split}), validating on '
+        f'{len(val_loader.dataset):,} (val)', log_file)
     has_test = (args.data / 'classification' / 'test.csv').exists()  # course data: no labelled test split
     test_loader = make_loader(args, 'test') if has_test else None
 
@@ -355,6 +363,14 @@ def main():
                     history[-1]['ema'] = {'delta_m': delta_m(val_ema), **val_ema}
                     log(f'epoch {epoch} val (EMA): {headline(val_ema)} delta_m {delta_m(val_ema):+.2f}', log_file)
                     keep_if_best(val_ema, epoch, 'ema')
+        if epoch in args.save_epochs:  # written under a temporary name, then renamed: never seen half-written
+            torch.save(model.state_dict(), run_dir / 'epoch.tmp')
+            (run_dir / 'epoch.tmp').replace(run_dir / f'model_ep{epoch}.pt')
+            if ema is not None:
+                with ema.applied():
+                    torch.save(model.state_dict(), run_dir / 'epoch.tmp')
+                (run_dir / 'epoch.tmp').replace(run_dir / f'model_ema_ep{epoch}.pt')
+            log(f'epoch {epoch}: saved model_ep{epoch}.pt' + (f' and model_ema_ep{epoch}.pt' if ema else ''), log_file)
         if validate or epoch % args.checkpoint_every == 0:
             state = {'epoch': epoch, 'model': model.state_dict(), 'optimizer': optimizer.state_dict(),
                      'schedule': schedule.state_dict(), 'torch_rng': torch.get_rng_state(),
