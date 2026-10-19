@@ -23,6 +23,7 @@ val Δm +41.69.**
 | 10 | DINOv3 ConvNeXt-B + **Cascade R-CNN** (3 stages, 512 wide) + LoRA r88 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep: **EMA weights of epoch 48**, submitted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep48.zip` | 39.4 M / 127.0 M | ~14 h to epoch 48 | 95.77 | 48.45 | 95.72 | 46.54 | 72.10 | 95.93 | +40.34 |
 | 11 | #10 at its best validation: **EMA weights of epoch 64** (= the finished run's `best.pt`), predicted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep64.zip` | 39.4 M / 127.0 M | ~18 h to epoch 64 (26.87 h for 96) | 96.15 | 49.35 | 95.81 | 46.99 | 73.04 | 96.00 | +41.25 |
 | 12 | #10 finished: **EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep96_ema.zip` | 39.4 M / 127.0 M | 26.87 h | 95.81 | 49.00 | 95.90 | 46.77 | 73.10 | 96.07 | +40.88 |
+| 13 | **Swin-B** (Microsoft, ImageNet-22k, 12 × 12 windows) + LoRA r112 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep, 4 images per pass (`--accum-steps 4`), PC 2: `best.pt` = EMA weights of epoch 96; score 0, NMS 0.8 | `submission_val_swin_final.zip` | 39.6 M / 126.4 M | 28.84 h | 95.68 | 43.63 | 93.94 | 35.55 | 58.67 | 94.25 | +18.36 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -50,12 +51,13 @@ settings (new options are off by default, so later branches reproduce earlier ru
 |---|---|
 | 1–5 | `main` |
 | 6 | `SAM2-LoRA125-EMA-e98` |
-| 7 | `DINOv3CNB-LoRA125-EMA-GIoU-LS-e108` |
+| 7–9 | `DINOv3CNB-LoRA125-EMA-GIoU-LS-e108` |
 | not submitted: rotation ±180° | `SAM2-LoRA125-Rot180-EMA-e80` |
 | not submitted: regularisation | `SAM2-LoRA125-EMA-Reg-e108` |
-| in progress: GIoU on SAM2 (PC 2) | `SAM2-LoRA125-EMA-GIoU-e108` |
-| planned: Swin-B (PC 2), 96 ep | `SwinB-LoRA112-EMA-GIoU-LS-e96` |
-| planned: DINOv3 ConvNeXt-B + Cascade R-CNN (PC 1), 96 ep | `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96` |
+| not submitted: GIoU on SAM2 (PC 2) | `SAM2-LoRA125-EMA-GIoU-e108` |
+| 10–12 | `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96` |
+| 13 (PC 2) | `SwinB-LoRA112-EMA-GIoU-LS-e96` |
+| in progress: full retrain of #7 on train + holdout (9,392 images), 96 ep (PC 1) | `DINOv3CNB-LoRA125-EMA-GIoU-LS-Full-e96` |
 
 ## Commands
 
@@ -96,6 +98,14 @@ python predict.py runs/dinov3/<run> --weights best.pt --images $DATA/val/images.
 python sweep_thresholds.py runs/dinov3/<run> --weights best.pt                      # score {0.001, 0.0001, 0} x NMS {0.4, 0.5, 0.6}
 python sweep_thresholds.py runs/dinov3/<run> --weights best.pt --score-thresh 0 --nms-thresh 0.65 0.7 0.75 0.8 0.85 0.9
 python predict.py runs/dinov3/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_dinov3_final_nms08.zip
+# 10-12  DINOv3 ConvNeXt-B + Cascade R-CNN (git branch DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96); 10 and 11: the
+#        epoch-48 / epoch-64 best.pt predicted while training (predict_at_epoch.sh); 12: the last epoch's EMA weights
+python train.py --backbone dinov3_convnext_b --init pretrained --adapt lora --lora-targets all --lora-rank 88   --detector cascade --cascade-width 512 --loss-weighting kendall --ema-decay 0.9995 --box-loss giou   --label-smoothing 0.1 --accum-steps 2 --epochs 96 --eval-every 4 --score-thresh 0.001 --workers 4   --out runs/dinov3_cascade --resume
+./predict_at_epoch.sh runs/dinov3_cascade/<run> 64 submission_val_dinov3_cascade_ep64.zip
+python predict.py runs/dinov3_cascade/<run> --weights model_ema.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_dinov3_cascade_ep96_ema.zip
+# 13  Swin-B (PC 2; git branch SwinB-LoRA112-EMA-GIoU-LS-e96); 4 images per pass so it fits 12 GB without spilling
+python train.py --backbone swin_b --init pretrained --adapt lora --lora-targets all --lora-rank 112   --loss-weighting kendall --ema-decay 0.9995 --box-loss giou --label-smoothing 0.1 --accum-steps 4 --epochs 96   --eval-every 4 --score-thresh 0.001 --workers 4 --out runs/swin_acc4 --resume
+python predict.py runs/swin_acc4/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_swin_final.zip
 ```
 
 Submission zip from a finished run (the `--out` folder plus the run's subfolder name; `--weights best.pt` is the
@@ -160,6 +170,13 @@ In run order (score threshold: from run 1 on).
   ceiling. On val its best (epoch 64, +41.25) stays 0.44 below run 7's tuned final (+41.69, submission 9), mostly
   from AP50 (73.04 vs 74.31); not adopted. Best-holdout epoch vs last epoch: 64 beat 96 on the holdout (+0.85)
   and on val (+0.37), so `best.pt` is the right pick for Phase 2.
+- **Swin-B (submission 13) vs DINOv3 ConvNeXt-B, same recipe and thresholds (submission 9):** val Δm +18.36 vs
+  +41.69 (mAP 35.55 vs 47.23, AP50 58.67 vs 74.31, F1 93.94 vs 95.79), and below SAM2 + EMA (submission 6,
+  +20.06). Its holdout − val gap is 16.4 Δm (holdout +34.75; mAP 43.63 → 35.55 on val), against 5.6–7.1 for
+  DINOv3: Swin's ImageNet-22k classification features fit the training distribution but generalise poorly to
+  val, and miss many objects outright (AP50). Backbone ranking: DINOv3 ConvNeXt-B ≫ SAM2 Hiera-B+ > Swin-B, i.e.
+  dense self-supervised / segmentation pretraining over class-label pretraining. Swin-B at 512 px needed 4 images
+  per pass on a 12 GB GPU: at 8 it spilled into system RAM and trained at 1.6–2.7 images/s (7.7 at 4; peak 6.5 GB).
 
 
 Runs that were not submitted, on the holdout:
@@ -185,7 +202,7 @@ Two PCs, one GPU each; every run uses one GPU. Train times in the tables are wal
 | RAM | 32 GB (16 GB available to WSL2) | 32 GB DDR4 |
 | Storage | NVMe SSD (Lexar NM710, 1 TB) | HDD |
 | OS | Windows 11, Ubuntu 26.04 under WSL2 | not recorded |
-| Runs | runs 1–7, the stopped rotation run, the regularisation run (branch `SAM2-LoRA125-EMA-Reg-e108`) | GIoU run (branch `SAM2-LoRA125-EMA-GIoU-e108`) |
+| Runs | submissions 1–12, the stopped rotation run, the regularisation run, the full retrain | GIoU run (branch `SAM2-LoRA125-EMA-GIoU-e108`), Swin-B (submission 13) |
 
 Same software on both (`requirements.txt`: torch 2.9.0, torchvision 0.24.0, timm 1.0.24; CUDA 12.8 wheels) and
 the same holdout split (`splits/`). Training reads the images from disk only until the OS caches them (the
@@ -203,4 +220,5 @@ checkpoint writes (~0.9 GB each).
   SAM2 attempt was lost to an overnight Windows Update (NVIDIA driver install + automatic restart).
 - Pretrained models used: TerraMind-1.0-base (IBM/ESA, via terratorch), SAM2 Hiera-B+ (Meta, timm
   `sam2_hiera_base_plus.fb_r896`), ViT-B/16 ImageNet-21k (timm `vit_base_patch16_224.augreg_in21k`), DINOv3
-  ConvNeXt-B (Meta, DINOv3 License, LVD-1689M web images; timm `convnext_base.dinov3_lvd1689m`).
+  ConvNeXt-B (Meta, DINOv3 License, LVD-1689M web images; timm `convnext_base.dinov3_lvd1689m`), Swin-B
+  (Microsoft, ImageNet-22k; timm `swin_base_patch4_window12_384.ms_in22k`).
