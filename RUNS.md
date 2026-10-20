@@ -3,9 +3,8 @@
 The models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results and val
 leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
-**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA, 108
-epochs (best validated weights: plain, epoch 100), detection score threshold 0 and NMS 0.8 tuned on the holdout:
-val Δm +41.69.**
+**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA,
+retrained on train + holdout (all 9,392 images), EMA weights of epoch 48 of 96, score 0 / NMS 0.8: val Δm +41.97.**
 
 ## Results
 
@@ -24,6 +23,7 @@ val Δm +41.69.**
 | 11 | #10 at its best validation: **EMA weights of epoch 64** (= the finished run's `best.pt`), predicted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep64.zip` | 39.4 M / 127.0 M | ~18 h to epoch 64 (26.87 h for 96) | 96.15 | 49.35 | 95.81 | 46.99 | 73.04 | 96.00 | +41.25 |
 | 12 | #10 finished: **EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep96_ema.zip` | 39.4 M / 127.0 M | 26.87 h | 95.81 | 49.00 | 95.90 | 46.77 | 73.10 | 96.07 | +40.88 |
 | 13 | **Swin-B** (Microsoft, ImageNet-22k, 12 × 12 windows) + LoRA r112 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep, 4 images per pass (`--accum-steps 4`), PC 2: `best.pt` = EMA weights of epoch 96; score 0, NMS 0.8 | `submission_val_swin_final.zip` | 39.6 M / 126.4 M | 28.84 h | 95.68 | 43.63 | 93.94 | 35.55 | 58.67 | 94.25 | +18.36 |
+| 14 | **#9's recipe retrained on train + holdout** (`--train-split full`, 9,392 images), 96 ep: **EMA weights of epoch 48** (`--save-epochs 48`), predicted while training; score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep48.zip` | 40.0 M / 127.5 M | ~12.9 h to epoch 48 | — ⁴ | — ⁴ | **96.63** | **47.14** | **74.34** | **96.84** | **+41.97** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -38,6 +38,9 @@ count 39,968,859 (limit 40 M).
 ³ Run 10 (branch `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96`): `predict_at_epoch.sh` froze the epoch-48 `best.pt`
 and predicted val on the CPU with the thresholds tuned for run 7 (score 0, NMS 0.8); its holdout numbers are from
 training's validation at score 0.001, NMS 0.5. Exact trainable count 39,422,803.
+
+⁴ Submissions from 14 on train on the holdout too, so it can no longer measure them (epoch 48: holdout F1 100,
+mAP 76.17); epochs are chosen by number and judged on val only.
 
 - **Holdout:** our 15 % stratified split of the train set (1,408 images; `splits/`, made by `prepare_data.py`,
   seed 0). Same split for every run.
@@ -177,6 +180,9 @@ In run order (score threshold: from run 1 on).
   val, and miss many objects outright (AP50). Backbone ranking: DINOv3 ConvNeXt-B ≫ SAM2 Hiera-B+ > Swin-B, i.e.
   dense self-supervised / segmentation pretraining over class-label pretraining. Swin-B at 512 px needed 4 images
   per pass on a 12 GB GPU: at 8 it spilled into system RAM and trained at 1.6–2.7 images/s (7.7 at 4; peak 6.5 GB).
+- **Retraining on train + holdout (submission 14):** with 15 % more training images, the epoch-48 weights already
+  beat the 85 %-split model's final (submission 9): val Δm +41.97 vs +41.69, mostly from classification (F1 96.63
+  vs 95.79, accuracy 96.84 vs 96.00) with detection level (mAP 47.14 vs 47.23, AP50 74.34 vs 74.31).
 
 
 Runs that were not submitted, on the holdout:
