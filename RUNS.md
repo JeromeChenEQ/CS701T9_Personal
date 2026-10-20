@@ -3,9 +3,8 @@
 The models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results and val
 leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
-**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA, 108
-epochs (best validated weights: plain, epoch 100), detection score threshold 0 and NMS 0.8 tuned on the holdout:
-val Δm +41.69.**
+**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA,
+retrained on train + holdout (all 9,392 images), EMA weights of epoch 48 of 96, score 0 / NMS 0.8: val Δm +41.97.**
 
 ## Results
 
@@ -23,6 +22,8 @@ val Δm +41.69.**
 | 10 | DINOv3 ConvNeXt-B + **Cascade R-CNN** (3 stages, 512 wide) + LoRA r88 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep: **EMA weights of epoch 48**, submitted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep48.zip` | 39.4 M / 127.0 M | ~14 h to epoch 48 | 95.77 | 48.45 | 95.72 | 46.54 | 72.10 | 95.93 | +40.34 |
 | 11 | #10 at its best validation: **EMA weights of epoch 64** (= the finished run's `best.pt`), predicted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep64.zip` | 39.4 M / 127.0 M | ~18 h to epoch 64 (26.87 h for 96) | 96.15 | 49.35 | 95.81 | 46.99 | 73.04 | 96.00 | +41.25 |
 | 12 | #10 finished: **EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep96_ema.zip` | 39.4 M / 127.0 M | 26.87 h | 95.81 | 49.00 | 95.90 | 46.77 | 73.10 | 96.07 | +40.88 |
+| 13 | **Swin-B** (Microsoft, ImageNet-22k, 12 × 12 windows) + LoRA r112 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep, 4 images per pass (`--accum-steps 4`), PC 2: `best.pt` = EMA weights of epoch 96; score 0, NMS 0.8 | `submission_val_swin_final.zip` | 39.6 M / 126.4 M | 28.84 h | 95.68 | 43.63 | 93.94 | 35.55 | 58.67 | 94.25 | +18.36 |
+| 14 | **#9's recipe retrained on train + holdout** (`--train-split full`, 9,392 images), 96 ep: **EMA weights of epoch 48** (`--save-epochs 48`), predicted while training; score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep48.zip` | 40.0 M / 127.5 M | ~12.9 h to epoch 48 | — ⁴ | — ⁴ | **96.63** | **47.14** | **74.34** | **96.84** | **+41.97** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -38,10 +39,28 @@ count 39,968,859 (limit 40 M).
 and predicted val on the CPU with the thresholds tuned for run 7 (score 0, NMS 0.8); its holdout numbers are from
 training's validation at score 0.001, NMS 0.5. Exact trainable count 39,422,803.
 
+⁴ Submissions from 14 on train on the holdout too, so it can no longer measure them (epoch 48: holdout F1 100,
+mAP 76.17); epochs are chosen by number and judged on val only.
+
 - **Holdout:** our 15 % stratified split of the train set (1,408 images; `splits/`, made by `prepare_data.py`,
   seed 0). Same split for every run.
 - **Seed variation** (runs 1 and 2): val F1 92.15 ± 0.02, mAP 30.81 ± 0.08, Δm +8.33 ± 0.16. The holdout varies
   more (F1 90.72 ± 1.19, mAP 31.16 ± 0.17), mostly from bridge ↔ playground confusions.
+
+**Code of each run.** `main` holds the code of runs 1–5; every later run is on its own git branch, named after its
+settings (new options are off by default, so later branches reproduce earlier runs):
+
+| Run | Branch |
+|---|---|
+| 1–5 | `main` |
+| 6 | `SAM2-LoRA125-EMA-e98` |
+| 7–9 | `DINOv3CNB-LoRA125-EMA-GIoU-LS-e108` |
+| not submitted: rotation ±180° | `SAM2-LoRA125-Rot180-EMA-e80` |
+| not submitted: regularisation | `SAM2-LoRA125-EMA-Reg-e108` |
+| not submitted: GIoU on SAM2 (PC 2) | `SAM2-LoRA125-EMA-GIoU-e108` |
+| 10–12 | `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96` |
+| 13 (PC 2) | `SwinB-LoRA112-EMA-GIoU-LS-e96` |
+| in progress: full retrain of #7 on train + holdout (9,392 images), 96 ep (PC 1) | `DINOv3CNB-LoRA125-EMA-GIoU-LS-Full-e96` |
 
 ## Commands
 
@@ -82,6 +101,14 @@ python predict.py runs/dinov3/<run> --weights best.pt --images $DATA/val/images.
 python sweep_thresholds.py runs/dinov3/<run> --weights best.pt                      # score {0.001, 0.0001, 0} x NMS {0.4, 0.5, 0.6}
 python sweep_thresholds.py runs/dinov3/<run> --weights best.pt --score-thresh 0 --nms-thresh 0.65 0.7 0.75 0.8 0.85 0.9
 python predict.py runs/dinov3/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_dinov3_final_nms08.zip
+# 10-12  DINOv3 ConvNeXt-B + Cascade R-CNN (git branch DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96); 10 and 11: the
+#        epoch-48 / epoch-64 best.pt predicted while training (predict_at_epoch.sh); 12: the last epoch's EMA weights
+python train.py --backbone dinov3_convnext_b --init pretrained --adapt lora --lora-targets all --lora-rank 88   --detector cascade --cascade-width 512 --loss-weighting kendall --ema-decay 0.9995 --box-loss giou   --label-smoothing 0.1 --accum-steps 2 --epochs 96 --eval-every 4 --score-thresh 0.001 --workers 4   --out runs/dinov3_cascade --resume
+./predict_at_epoch.sh runs/dinov3_cascade/<run> 64 submission_val_dinov3_cascade_ep64.zip
+python predict.py runs/dinov3_cascade/<run> --weights model_ema.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_dinov3_cascade_ep96_ema.zip
+# 13  Swin-B (PC 2; git branch SwinB-LoRA112-EMA-GIoU-LS-e96); 4 images per pass so it fits 12 GB without spilling
+python train.py --backbone swin_b --init pretrained --adapt lora --lora-targets all --lora-rank 112   --loss-weighting kendall --ema-decay 0.9995 --box-loss giou --label-smoothing 0.1 --accum-steps 4 --epochs 96   --eval-every 4 --score-thresh 0.001 --workers 4 --out runs/swin_acc4 --resume
+python predict.py runs/swin_acc4/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_swin_final.zip
 ```
 
 Submission zip from a finished run (the `--out` folder plus the run's subfolder name; `--weights best.pt` is the
@@ -95,6 +122,28 @@ python check_submission.py $DATA/val/images.json submission_val_sam2_e98_ema.zip
 
 ## Findings
 
+In run order (score threshold: from run 1 on).
+
+- **Lower detection score threshold (0.001 vs 0.05):** +0.16 holdout mAP, no retraining needed.
+- **Detail branch:** small, real mAP gain (+0.26 val mAP over the seed mean) but −0.5 F1; net +0.2 Δm for 2 h
+  more training. Not adopted.
+- **Unfreezing the last 2 TerraMind blocks:** +0.4 holdout mAP but −0.7 val mAP; worse on val (+7.33).
+  Not adopted.
+- **SAM2 Hiera-B+ (multi-scale, strides 4–32) beats every TerraMind variant** by about +4 F1 and +2 mAP on the
+  holdout and +4.7 Δm on val over the best TerraMind submission, above the reference full fine-tuning (+11.8 on val, 106 M trainable). Its
+  training-set F1 is 100 % (fully memorised), training mAP 42.9 vs holdout 33.3. Holdout mAP gained only +0.2
+  between epochs 42 and 48.
+- **EMA + 98 epochs (run 6) over run 5:** +6.8 val Δm, almost all from detection (val mAP 36.57 vs 33.10, F1
+  93.46 vs 93.12). The EMA weights beat the plain ones by +3 to +8.5 holdout Δm from epoch 12 to 64 and by +0.6 to
+  +2.2 from 68 to 76; from epoch 80, with the learning rate near 0, the two were within 0.4. The plain weights fell
+  back between validations three times (by up to 1.0 Δm), the EMA weights never after epoch 4. Holdout Δm rose from +21.5 (epoch 60) to +25.7 (epoch 98), +0.3 over the last 8 epochs. Training
+  classification loss reached 0.000 and the Kendall classification weight grew to 180 (detection: 9.3).
+  The val Δm is 5.7 below the holdout Δm (+25.75), against 1.3 for run 5.
+- **Regularisation (scale jitter 0.25 + drop path 0.1 + label smoothing 0.1 on #6), stopped after epoch 60:**
+  best holdout classification of any run (F1 95.12) but −2.6 mAP against #6 at the same epoch, net −4.8 holdout
+  Δm; not adopted as a whole. Label smoothing is kept for later runs (the classification gain and a bounded
+  Kendall weight); scale jitter and drop path are the likely cause of the slower detection (not separated).
+  Validation history: `runs/sam2_reg/.../metrics_partial.json` (not in git).
 - **DINOv3 ConvNeXt-B (run 7) nearly doubles Δm over SAM2 (run 6):** val +39.13 vs +20.06, from both tasks (val
   mAP 45.94 vs 36.57, F1 95.61 vs 93.46), already at epoch 64 of 108. It also changes GIoU and label smoothing, but
   GIoU alone on SAM2 was level with run 6 at epoch 36 (holdout Δm +11.69 vs +12.73, EMA) and label smoothing
@@ -124,22 +173,17 @@ python check_submission.py $DATA/val/images.json submission_val_sam2_e98_ema.zip
   ceiling. On val its best (epoch 64, +41.25) stays 0.44 below run 7's tuned final (+41.69, submission 9), mostly
   from AP50 (73.04 vs 74.31); not adopted. Best-holdout epoch vs last epoch: 64 beat 96 on the holdout (+0.85)
   and on val (+0.37), so `best.pt` is the right pick for Phase 2.
+- **Swin-B (submission 13) vs DINOv3 ConvNeXt-B, same recipe and thresholds (submission 9):** val Δm +18.36 vs
+  +41.69 (mAP 35.55 vs 47.23, AP50 58.67 vs 74.31, F1 93.94 vs 95.79), and below SAM2 + EMA (submission 6,
+  +20.06). Its holdout − val gap is 16.4 Δm (holdout +34.75; mAP 43.63 → 35.55 on val), against 5.6–7.1 for
+  DINOv3: Swin's ImageNet-22k classification features fit the training distribution but generalise poorly to
+  val, and miss many objects outright (AP50). Backbone ranking: DINOv3 ConvNeXt-B ≫ SAM2 Hiera-B+ > Swin-B, i.e.
+  dense self-supervised / segmentation pretraining over class-label pretraining. Swin-B at 512 px needed 4 images
+  per pass on a 12 GB GPU: at 8 it spilled into system RAM and trained at 1.6–2.7 images/s (7.7 at 4; peak 6.5 GB).
+- **Retraining on train + holdout (submission 14):** with 15 % more training images, the epoch-48 weights already
+  beat the 85 %-split model's final (submission 9): val Δm +41.97 vs +41.69, mostly from classification (F1 96.63
+  vs 95.79, accuracy 96.84 vs 96.00) with detection level (mAP 47.14 vs 47.23, AP50 74.34 vs 74.31).
 
-- **SAM2 Hiera-B+ (multi-scale, strides 4–32) beats every TerraMind variant** by about +4 F1 and +2 mAP on the
-  holdout and +4.7 Δm on val over the best TerraMind submission, above the reference full fine-tuning (+11.8 on val, 106 M trainable). Its
-  training-set F1 is 100 % (fully memorised), training mAP 42.9 vs holdout 33.3. Holdout mAP gained only +0.2
-  between epochs 42 and 48.
-- **EMA + 98 epochs (run 6) over run 5:** +6.8 val Δm, almost all from detection (val mAP 36.57 vs 33.10, F1
-  93.46 vs 93.12). The EMA weights beat the plain ones by +3 to +8.5 holdout Δm from epoch 12 to 64 and by +0.6 to
-  +2.2 from 68 to 76; from epoch 80, with the learning rate near 0, the two were within 0.4. The plain weights fell
-  back between validations three times (by up to 1.0 Δm), the EMA weights never after epoch 4. Holdout Δm rose from +21.5 (epoch 60) to +25.7 (epoch 98), +0.3 over the last 8 epochs. Training
-  classification loss reached 0.000 and the Kendall classification weight grew to 180 (detection: 9.3).
-  The val Δm is 5.7 below the holdout Δm (+25.75), against 1.3 for run 5.
-- **Detail branch:** small, real mAP gain (+0.26 val mAP over the seed mean) but −0.5 F1; net +0.2 Δm for 2 h
-  more training. Not adopted.
-- **Unfreezing the last 2 TerraMind blocks:** +0.4 holdout mAP but −0.7 val mAP; worse on val (+7.33).
-  Not adopted.
-- **Lower detection score threshold (0.001 vs 0.05):** +0.16 holdout mAP, no retraining needed.
 
 Runs that were not submitted, on the holdout:
 
@@ -150,6 +194,7 @@ Runs that were not submitted, on the holdout:
 | TerraMind + MoE-LoRA + label smoothing 0.1 + detection→class fusion, 24 ep | 90.15 | 27.37 | no gain; fusion weights stayed near 0 |
 | #1 + 90° rotations + intensity jitter, 36 ep | 92.17 | 26.53 | **90° rotations hurt**: the no-augmentation model scores 12.9 mAP on 90°-rotated holdout images vs 31.3 unrotated (180° and flips: no loss), so SAR orientation carries information |
 | #5 + random rotation ±180° + EMA 0.9995, 80 ep, **stopped after epoch 47** | 92.61 | 19.80 | best: EMA weights at epoch 44 (holdout Δm −12.49). **Any-angle rotation hurts detection badly**: mAP 19.8 vs 33.1 for #5 at epoch 42 (F1 92.6 vs 94.7). EMA beat the plain weights at every validation from epoch 16 on, 8 of 11 (epoch 44: Δm −12.49 vs −13.52; epoch 16: −24.45 vs −32.68); before that the average still carried the early weights |
+| #6 + scale jitter 0.25 + drop path 0.1 + label smoothing 0.1, 108 ep, **stopped after epoch 60** (branch `SAM2-LoRA125-EMA-Reg-e108`, 14.24 h) | 95.12 | 34.34 | best: EMA weights at epoch 60, holdout Δm +16.69 vs +21.52 for #6 at epoch 60 (F1 94.74, mAP 36.98). **Classification gains, detection loses**: F1 95.12 is above #6 at any epoch (final 94.89), but mAP stayed 2.6–2.9 behind from epoch 44 on; the EMA Δm gap to #6 was −2.9 at epoch 20, −4.6 at 40, −4.8 at 60. Label smoothing kept the Kendall classification weight at 1.2–2.0 (#6: 180) |
 
 ## Compute
 
@@ -163,7 +208,7 @@ Two PCs, one GPU each; every run uses one GPU. Train times in the tables are wal
 | RAM | 32 GB (16 GB available to WSL2) | 32 GB DDR4 |
 | Storage | NVMe SSD (Lexar NM710, 1 TB) | HDD |
 | OS | Windows 11, Ubuntu 26.04 under WSL2 | not recorded |
-| Runs | runs 1–6, the stopped rotation run, the regularisation run (branch `SAM2-LoRA125-EMA-Reg-e108`) | GIoU run (branch `SAM2-LoRA125-EMA-GIoU-e108`) |
+| Runs | submissions 1–12, the stopped rotation run, the regularisation run, the full retrain | GIoU run (branch `SAM2-LoRA125-EMA-GIoU-e108`), Swin-B (submission 13) |
 
 Same software on both (`requirements.txt`: torch 2.9.0, torchvision 0.24.0, timm 1.0.24; CUDA 12.8 wheels) and
 the same holdout split (`splits/`). Training reads the images from disk only until the OS caches them (the
@@ -173,10 +218,13 @@ checkpoint writes (~0.9 GB each).
 ## Notes
 
 - Not in this repo: the dataset, `runs/` (model files ~430 MB each), the submission zips and the training logs.
-- `prepare_data.py` has the data location hard-coded (`cs701-sar-course-data` in this repo); copying
-  `splits/` gives the same holdout without running it.
+- `prepare_data.py` has the data location hard-coded: `~/cs701-sar-benchmark/cs701-sar-course-data` on `main`,
+  `cs701-sar-course-data` in this repo on the branches from run 6 on; copying `splits/` gives the same holdout
+  without running it.
 - `train.py --resume` continues an interrupted run from its last checkpoint (saved after every epoch since run 6;
   at every validation before). The first
   SAM2 attempt was lost to an overnight Windows Update (NVIDIA driver install + automatic restart).
 - Pretrained models used: TerraMind-1.0-base (IBM/ESA, via terratorch), SAM2 Hiera-B+ (Meta, timm
-  `sam2_hiera_base_plus.fb_r896`), ViT-B/16 ImageNet-21k (timm `vit_base_patch16_224.augreg_in21k`).
+  `sam2_hiera_base_plus.fb_r896`), ViT-B/16 ImageNet-21k (timm `vit_base_patch16_224.augreg_in21k`), DINOv3
+  ConvNeXt-B (Meta, DINOv3 License, LVD-1689M web images; timm `convnext_base.dinov3_lvd1689m`), Swin-B
+  (Microsoft, ImageNet-22k; timm `swin_base_patch4_window12_384.ms_in22k`).
