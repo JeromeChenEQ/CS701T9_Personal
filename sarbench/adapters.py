@@ -51,6 +51,21 @@ def add_lora_everywhere(backbone, rank):
         setattr(parent, name, LoRA(child, rank=rank, alpha=2 * rank))
 
 
+def depthwise_and_norm_params(backbone):
+    """The backbone's small per-channel parameters that LoRA on the Linear layers leaves frozen: depthwise
+    convolutions (weights and biases; ConvNeXt's 7 x 7 token mixers), LayerNorms (weights and biases) and layer
+    scales (`gamma`). DINOv3 ConvNeXt-B: 958,592 values, against 83.8 M in its Linear layers."""
+    params = []
+    for module in backbone.modules():
+        if isinstance(module, nn.Conv2d) and module.groups > 1 and module.groups == module.in_channels:
+            params += list(module.parameters(recurse=False))
+        elif isinstance(module, nn.LayerNorm):  # timm's LayerNorm2d is a LayerNorm too
+            params += list(module.parameters(recurse=False))
+        else:
+            params += [p for name, p in module.named_parameters(recurse=False) if name == 'gamma']
+    return params
+
+
 def add_adapters(backbone, kind, mlp=False, unfreeze_last=0, rank=16):
     """Freeze the backbone, then wrap attn.qkv and attn.proj of every block (kind: 'lora' or 'moelora'); with
     mlp=True also every Linear of the block's MLP (ViT: fc1, fc2; TerraMind's gated MLP: fc1, fc2, fc3).

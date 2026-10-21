@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from sarbench.adapters import add_adapters, add_lora_everywhere
+from sarbench.adapters import add_adapters, add_lora_everywhere, depthwise_and_norm_params
 from sarbench.backbones import HIERARCHICAL, build_backbone
 from sarbench.data import SARMultiTask, collate, to_original_xywh
 from sarbench.metrics import classification_metrics, detection_metrics
@@ -61,6 +61,9 @@ def parse_args():
     p.add_argument('--lora-rank', type=int, default=16, help='rank of the plain LoRA (alpha = 2 x rank)')
     p.add_argument('--lora-targets', default='attn', choices=['attn', 'all'],
                    help='attn: attn.qkv and attn.proj of every ViT block; all: every Linear layer of the backbone')
+    p.add_argument('--unfreeze-dw-norm', action='store_true',
+                   help='also train the backbone\'s depthwise convs, LayerNorms and layer scales (DINOv3 ConvNeXt-B: '
+                        '0.96 M), at --unfrozen-lr without weight decay')
     p.add_argument('--unfreeze-last', type=int, default=0,
                    help='train the last N backbone blocks in full (no adapters on them); the others keep adapters')
     p.add_argument('--unfrozen-lr', type=float, default=2e-5,
@@ -116,6 +119,9 @@ def build_model(args, pretrained):
         else:
             add_adapters(backbone, args.adapt, mlp=option('adapt_mlp', False),  # also freezes the backbone
                          unfreeze_last=option('unfreeze_last', 0), rank=option('lora_rank', 16))
+        if option('unfreeze_dw_norm', False):  # partial fine-tuning of the small per-channel parameters
+            for p in depthwise_and_norm_params(backbone):
+                p.requires_grad_(True)
     model = MultiTaskModel(backbone, task_routing=args.adapt == 'moelora',
                            loss_weighting=option('loss_weighting', 'sum'), det_fusion=option('det_fusion', False),
                            detail_branch=option('detail_branch', False), score_thresh=option('score_thresh', 0.05),
@@ -263,6 +269,7 @@ def main():
     suffixes += ['all'] if args.lora_targets == 'all' else []
     suffixes += [f'r{args.lora_rank}'] if args.adapt == 'lora' and args.lora_rank != 16 else []
     suffixes += [f'unfreeze{args.unfreeze_last}'] if args.unfreeze_last else []
+    suffixes += ['dwnorm'] if args.unfreeze_dw_norm else []
     suffixes += [f'ema{args.ema_decay:g}'] if args.ema_decay else []
     suffixes += [f'giou{args.giou_weight:g}'] if args.box_loss == 'giou' else []
     suffixes += [args.train_split] if args.train_split != 'train' else []
@@ -298,13 +305,20 @@ def main():
     if args.unfreeze_last:
         blocks = list(model.backbone.blocks)
         unfrozen = {id(p) for blk in blocks[len(blocks) - args.unfreeze_last:] for p in blk.parameters()}
-    backbone_params = [p for p in model.backbone.parameters() if p.requires_grad and id(p) not in unfrozen]
+    # Unfrozen depthwise convs / norms / layer scales: pretrained values, so the gentler --unfrozen-lr, and no weight
+    # decay (it would pull norm weights and layer scales towards 0)
+    dw_norm = {id(p) for p in depthwise_and_norm_params(model.backbone)} if args.unfreeze_dw_norm else set()
+    backbone_params = [p for p in model.backbone.parameters()
+                       if p.requires_grad and id(p) not in unfrozen and id(p) not in dw_norm]
     no_decay = ('log_vars', 'fusion_weights')  # learned scalars: weight decay would pull them back to the plain model
     head_params = [p for name, p in model.named_parameters() if not name.startswith('backbone.') and name not in no_decay]
     groups = [{'params': backbone_params, 'lr': args.backbone_lr}, {'params': head_params}]
     if unfrozen:
         groups.append({'params': [p for p in model.backbone.parameters() if id(p) in unfrozen],
                        'lr': args.unfrozen_lr})
+    if dw_norm:
+        groups.append({'params': [p for p in model.backbone.parameters() if id(p) in dw_norm],
+                       'lr': args.unfrozen_lr, 'weight_decay': 0.0})
     if model.log_vars is not None:
         groups.append({'params': [model.log_vars], 'lr': args.loss_weight_lr, 'weight_decay': 0.0})
     if model.fusion_weights is not None:
