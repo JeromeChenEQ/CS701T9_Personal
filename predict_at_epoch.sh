@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Make a val submission from a run, at a given epoch, with the thresholds tuned on the holdout (score 0, NMS 0.8).
+# Make a val submission from a run, at a given epoch, with the inference settings tuned on the holdout: score 0,
+# NMS 0.8, boxes rescored by the class head (relative, alpha 4, best 100 of 300); RESCORE="" turns rescoring off.
 # Usage: nohup setsid ./predict_at_epoch.sh runs/<out>/<run>/ 64 submission_val_<name>_ep64.zip [WEIGHTS] \
 #            > predict_<name>_ep64.out 2>&1 &
 # Without WEIGHTS: wait until that epoch is validated (training has moved on to the next one, so best.pt is fully
@@ -9,6 +10,7 @@
 set -u
 RUN=${1%/}; EPOCH=$2; ZIP=$3; WEIGHTS=${4:-}
 PY=${PY:-python}
+RESCORE=${RESCORE---rescore-alpha 4 --candidates 300}
 cd "$(dirname "$0")"
 echo "waiting for epoch $EPOCH of $RUN${WEIGHTS:+ ($WEIGHTS)} since $(date '+%a %H:%M')"
 # If training stops (crash, or stopped to be resumed), keep waiting: it continues from its checkpoint with --resume
@@ -42,6 +44,6 @@ else
   DEVICE=""
 fi
 $PY predict.py "$RUN" --weights "$WEIGHTS" --images cs701-sar-course-data/val/images.json \
-  --score-thresh 0 --nms-thresh 0.8 $DEVICE --out "$ZIP" 2>&1 | grep -v -i "warning\|_C._set"
+  --score-thresh 0 --nms-thresh 0.8 $RESCORE $DEVICE --out "$ZIP" 2>&1 | grep -v -i "warning\|_C._set"
 $PY check_submission.py cs701-sar-course-data/val/images.json "$ZIP" 2>&1 | tail -4
 echo "done at $(date '+%a %H:%M')"
