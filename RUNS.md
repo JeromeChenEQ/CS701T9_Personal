@@ -4,7 +4,8 @@ The models submitted to the Codabench Phase 1 (val) leaderboard, with their sett
 leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
 **Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA,
-retrained on train + holdout (all 9,392 images) for 96 epochs, final EMA weights, score 0 / NMS 0.8: val Δm +45.30.**
+retrained on train + holdout (all 9,392 images) for 96 epochs, final EMA weights; inference: score 0, NMS 0.8, boxes
+rescored by the class head (relative, α 4): val Δm +46.11.**
 
 ## Results
 
@@ -24,7 +25,8 @@ retrained on train + holdout (all 9,392 images) for 96 epochs, final EMA weights
 | 12 | #10 finished: **EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep96_ema.zip` | 39.4 M / 127.0 M | 26.87 h | 95.81 | 49.00 | 95.90 | 46.77 | 73.10 | 96.07 | +40.88 |
 | 13 | **Swin-B** (Microsoft, ImageNet-22k, 12 × 12 windows) + LoRA r112 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep, 4 images per pass (`--accum-steps 4`), PC 2: `best.pt` = EMA weights of epoch 96; score 0, NMS 0.8 | `submission_val_swin_final.zip` | 39.6 M / 126.4 M | 28.84 h | 95.68 | 43.63 | 93.94 | 35.55 | 58.67 | 94.25 | +18.36 |
 | 14 | **#9's recipe retrained on train + holdout** (`--train-split full`, 9,392 images), 96 ep: **EMA weights of epoch 48** (`--save-epochs 48`), predicted while training; score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep48.zip` | 40.0 M / 127.5 M | ~12.9 h to epoch 48 | — ⁴ | — ⁴ | 96.63 | 47.14 | 74.34 | 96.84 | +41.97 |
-| 15 | **#14 finished: EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep96.zip` | 40.0 M / 127.5 M | 26.05 h | — ⁴ | — ⁴ | **96.24** | **48.98** | **75.43** | **96.49** | **+45.30** |
+| 15 | **#14 finished: EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep96.zip` | 40.0 M / 127.5 M | 26.05 h | — ⁴ | — ⁴ | 96.24 | 48.98 | 75.43 | 96.49 | +45.30 |
+| 16 | **#15 with boxes rescored by the class head**: score × (p(box class) / p(top class))^4, best 100 of 300 candidates per image; same weights, inference only ⁴ | `submission_val_dinov3_full_ep96_rescore4.zip` | 40.0 M / 127.5 M | 26.05 h | — ⁴ | — ⁴ | **96.24** | **49.41** | **75.85** | **96.49** | **+46.11** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -110,6 +112,14 @@ python predict.py runs/dinov3_cascade/<run> --weights model_ema.pt --images $DAT
 # 13  Swin-B (PC 2; git branch SwinB-LoRA112-EMA-GIoU-LS-e96); 4 images per pass so it fits 12 GB without spilling
 python train.py --backbone swin_b --init pretrained --adapt lora --lora-targets all --lora-rank 112   --loss-weighting kendall --ema-decay 0.9995 --box-loss giou --label-smoothing 0.1 --accum-steps 4 --epochs 96   --eval-every 4 --score-thresh 0.001 --workers 4 --out runs/swin_acc4 --resume
 python predict.py runs/swin_acc4/<run> --weights best.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_swin_final.zip
+# 14-16  #9's recipe on train + holdout (git branch DINOv3CNB-LoRA125-EMA-GIoU-LS-Full-e96; splits from
+#        make_full_split.py); 14: the epoch-48 EMA weights; 15: the final ones; 16: 15 with rescoring
+python make_full_split.py
+python train.py --backbone dinov3_convnext_b --init pretrained --adapt lora --lora-targets all --lora-rank 125   --loss-weighting kendall --ema-decay 0.9995 --box-loss giou --label-smoothing 0.1 --accum-steps 2 --epochs 96   --eval-every 48 --save-epochs 48 --train-split full --score-thresh 0.001 --workers 4 --out runs/dinov3_full --resume
+./predict_at_epoch.sh runs/dinov3_full/<run> 48 submission_val_dinov3_full_ep48.zip model_ema_ep48.pt
+python predict.py runs/dinov3_full/<run> --weights model_ema.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --out submission_val_dinov3_full_ep96.zip
+python sweep_rescore.py runs/dinov3/<run> --weights best.pt     # alpha on the holdout, with run 7's 85 %-split model
+python predict.py runs/dinov3_full/<run> --weights model_ema.pt --images $DATA/val/images.json --score-thresh 0   --nms-thresh 0.8 --rescore-alpha 4 --candidates 300 --out submission_val_dinov3_full_ep96_rescore4.zip
 ```
 
 Submission zip from a finished run (the `--out` folder plus the run's subfolder name; `--weights best.pt` is the
@@ -188,6 +198,15 @@ In run order (score threshold: from run 1 on).
   +3.61 over the 85 %-split model (submission 9), now from detection (mAP 48.98 vs 47.14 at epoch 48 and 47.23 for
   #9; AP50 75.43); F1 eased from its epoch-48 peak (96.63 → 96.24) but stays above every 85 %-split model. The Phase 2
   candidate. (Holdout at epoch 96, trained on: F1 100, mAP 93.13.)
+- **Rescoring boxes by the class head (submission 16), inference only:** every box of an image has the image's
+  class, so a box's score is multiplied by the class head's probability of its class to the power α, the image's
+  best 100 boxes are kept, and boxes of ruled-out classes sink in COCO's per-class rankings. Tuned on the holdout
+  with run 7's 85 %-split weights (score 0, NMS 0.8; baseline +48.21): the probability itself hurts at every α
+  (0.25: +43.87, 2: +42.21; label smoothing caps it near 0.91 and it varies across images, so even the predicted
+  class's correct boxes are reshuffled across images); the probability relative to the image's top class leaves the
+  predicted class's boxes untouched and helps, plateauing from α 4: +49.07 with 300 candidates per image (mAP 50.57
+  → 51.02, AP75 55.40 → 55.96; 1000 candidates +49.11). On val with #15's weights: +45.30 → +46.11 (mAP 48.98 →
+  49.41, AP50 75.43 → 75.85), the holdout gain (+0.86) carrying over. No parameters, one forward pass.
 
 
 Runs that were not submitted, on the holdout:
