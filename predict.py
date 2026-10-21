@@ -64,20 +64,43 @@ def load_run(run, weights, device='cuda', threads=None):
 
 
 @torch.no_grad()
-def predict(model, dataset, device='cuda', batch_size=8, workers=4):
-    """-> ({image id: label 0..8}, COCO detections in original pixels with category 1..9)."""
+def predict_raw(model, dataset, device='cuda', batch_size=8, workers=4):
+    """-> per image: (image id, original size, class probabilities [9], detections {'boxes', 'scores', 'labels'})
+    on the CPU, boxes still on the 512 x 512 input."""
     loader = DataLoader(dataset, batch_size, num_workers=workers, collate_fn=lambda batch: tuple(zip(*batch)))
-    labels, detections = {}, []
+    raw = []
     for images, ids, sizes in loader:
         # bf16 on the GPU, as in training; fp32 on the CPU
         with torch.autocast(device, dtype=torch.bfloat16, enabled=device == 'cuda'):
             logits, outputs, _ = model(torch.stack(images).to(device))
-        for image_id, size, label, out in zip(ids, sizes, logits.argmax(dim=1).tolist(), outputs):
-            labels[image_id] = label
-            boxes = to_original_xywh(out['boxes'], size).tolist()
-            detections += [{'image_id': image_id, 'category_id': c, 'bbox': b, 'score': s}
-                           for b, c, s in zip(boxes, out['labels'].tolist(), out['scores'].tolist())]
+        probs = logits.float().softmax(dim=1).cpu()
+        raw += [(image_id, size, p, {k: v.cpu() for k, v in out.items()})
+                for image_id, size, p, out in zip(ids, sizes, probs, outputs)]
+    return raw
+
+
+def to_submission(raw, rescore_alpha=0.0, keep=100, relative=False):
+    """predict_raw's output -> ({image id: label 0..8}, COCO detections in original pixels, category 1..9).
+    rescore_alpha > 0: every box of an image has the image's class, so each box's score is multiplied by the class
+    head's probability for the box's class, to the power alpha, before keeping the image's `keep` best boxes; boxes of
+    classes the class head rules out sink in the per-class rankings of COCO AP. 0: the detector's own scores.
+    relative: use the probability divided by the image's highest one, so boxes of the predicted class keep their
+    scores and only the other classes' boxes are scaled down."""
+    labels, detections = {}, []
+    for image_id, size, probs, out in raw:
+        labels[image_id] = int(probs.argmax())
+        weights = probs / probs.max() if relative else probs
+        scores = out['scores'] * weights[out['labels'] - 1] ** rescore_alpha if rescore_alpha else out['scores']
+        order = scores.argsort(descending=True)[:keep]
+        boxes = to_original_xywh(out['boxes'][order], size).tolist()
+        detections += [{'image_id': image_id, 'category_id': c, 'bbox': b, 'score': s}
+                       for b, c, s in zip(boxes, out['labels'][order].tolist(), scores[order].tolist())]
     return labels, detections
+
+
+def predict(model, dataset, device='cuda', batch_size=8, workers=4, rescore_alpha=0.0, keep=100, relative=False):
+    """-> ({image id: label 0..8}, COCO detections in original pixels with category 1..9)."""
+    return to_submission(predict_raw(model, dataset, device, batch_size, workers), rescore_alpha, keep, relative)
 
 
 def main():
@@ -91,6 +114,15 @@ def main():
     p.add_argument('--score-thresh', type=float, help="override the run's detection score threshold")
     p.add_argument('--nms-thresh', type=float,
                    help="override the box head's per-class NMS IoU threshold (training's default: 0.5)")
+    p.add_argument('--rescore-alpha', type=float, default=0.0,
+                   help="multiply each box's score by the class head's probability of the box's class to this power "
+                        "(0: off); tuned on the holdout with sweep_rescore.py")
+    p.add_argument('--rescore-mode', default='relative', choices=['relative', 'absolute'],
+                   help="relative: the box's class probability divided by the image's highest one, so boxes of the "
+                        "predicted class keep their scores (holdout: +0.86 delta_m at alpha 4); absolute: the "
+                        "probability itself (holdout: worse at every alpha)")
+    p.add_argument('--candidates', type=int, default=100,
+                   help='boxes per image taken from the detector before rescoring; the best 100 are kept')
     p.add_argument('--gt', type=Path, help='COCO ground truth of the same images: also print the metrics')
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--workers', type=int, default=4)
@@ -104,8 +136,10 @@ def main():
         model.roi_heads.score_thresh = args.score_thresh
     if args.nms_thresh is not None:
         model.roi_heads.nms_thresh = args.nms_thresh
+    model.roi_heads.detections_per_img = args.candidates
     dataset = ImagesToPredict(args.images)
-    labels, detections = predict(model, dataset, args.device, args.batch_size, args.workers)
+    labels, detections = predict(model, dataset, args.device, args.batch_size, args.workers, args.rescore_alpha,
+                                 relative=args.rescore_mode == 'relative')
 
     table = io.StringIO()
     writer = csv.writer(table, lineterminator='\n')
