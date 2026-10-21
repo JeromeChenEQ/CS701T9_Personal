@@ -4,7 +4,7 @@ The models submitted to the Codabench Phase 1 (val) leaderboard, with their sett
 leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
 **Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA,
-retrained on train + holdout (all 9,392 images), EMA weights of epoch 48 of 96, score 0 / NMS 0.8: val Δm +41.97.**
+retrained on train + holdout (all 9,392 images) for 96 epochs, final EMA weights, score 0 / NMS 0.8: val Δm +45.30.**
 
 ## Results
 
@@ -23,7 +23,8 @@ retrained on train + holdout (all 9,392 images), EMA weights of epoch 48 of 96, 
 | 11 | #10 at its best validation: **EMA weights of epoch 64** (= the finished run's `best.pt`), predicted while training ³; score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep64.zip` | 39.4 M / 127.0 M | ~18 h to epoch 64 (26.87 h for 96) | 96.15 | 49.35 | 95.81 | 46.99 | 73.04 | 96.00 | +41.25 |
 | 12 | #10 finished: **EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 | `submission_val_dinov3_cascade_ep96_ema.zip` | 39.4 M / 127.0 M | 26.87 h | 95.81 | 49.00 | 95.90 | 46.77 | 73.10 | 96.07 | +40.88 |
 | 13 | **Swin-B** (Microsoft, ImageNet-22k, 12 × 12 windows) + LoRA r112 (all layers) + Kendall + EMA 0.9995 + GIoU + label smoothing 0.1, 96 ep, 4 images per pass (`--accum-steps 4`), PC 2: `best.pt` = EMA weights of epoch 96; score 0, NMS 0.8 | `submission_val_swin_final.zip` | 39.6 M / 126.4 M | 28.84 h | 95.68 | 43.63 | 93.94 | 35.55 | 58.67 | 94.25 | +18.36 |
-| 14 | **#9's recipe retrained on train + holdout** (`--train-split full`, 9,392 images), 96 ep: **EMA weights of epoch 48** (`--save-epochs 48`), predicted while training; score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep48.zip` | 40.0 M / 127.5 M | ~12.9 h to epoch 48 | — ⁴ | — ⁴ | **96.63** | **47.14** | **74.34** | **96.84** | **+41.97** |
+| 14 | **#9's recipe retrained on train + holdout** (`--train-split full`, 9,392 images), 96 ep: **EMA weights of epoch 48** (`--save-epochs 48`), predicted while training; score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep48.zip` | 40.0 M / 127.5 M | ~12.9 h to epoch 48 | — ⁴ | — ⁴ | 96.63 | 47.14 | 74.34 | 96.84 | +41.97 |
+| 15 | **#14 finished: EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep96.zip` | 40.0 M / 127.5 M | 26.05 h | — ⁴ | — ⁴ | **96.24** | **48.98** | **75.43** | **96.49** | **+45.30** |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -60,7 +61,7 @@ settings (new options are off by default, so later branches reproduce earlier ru
 | not submitted: GIoU on SAM2 (PC 2) | `SAM2-LoRA125-EMA-GIoU-e108` |
 | 10–12 | `DINOv3CNB-LoRA88-Cascade-EMA-GIoU-LS-e96` |
 | 13 (PC 2) | `SwinB-LoRA112-EMA-GIoU-LS-e96` |
-| in progress: full retrain of #7 on train + holdout (9,392 images), 96 ep (PC 1) | `DINOv3CNB-LoRA125-EMA-GIoU-LS-Full-e96` |
+| 14–15: full retrain of #7 on train + holdout (9,392 images), 96 ep | `DINOv3CNB-LoRA125-EMA-GIoU-LS-Full-e96` |
 
 ## Commands
 
@@ -183,6 +184,10 @@ In run order (score threshold: from run 1 on).
 - **Retraining on train + holdout (submission 14):** with 15 % more training images, the epoch-48 weights already
   beat the 85 %-split model's final (submission 9): val Δm +41.97 vs +41.69, mostly from classification (F1 96.63
   vs 95.79, accuracy 96.84 vs 96.00) with detection level (mAP 47.14 vs 47.23, AP50 74.34 vs 74.31).
+- **Full retrain finished (submission 15):** the final EMA weights reach val Δm +45.30, +3.33 over its epoch 48 and
+  +3.61 over the 85 %-split model (submission 9), now from detection (mAP 48.98 vs 47.14 at epoch 48 and 47.23 for
+  #9; AP50 75.43); F1 eased from its epoch-48 peak (96.63 → 96.24) but stays above every 85 %-split model. The Phase 2
+  candidate. (Holdout at epoch 96, trained on: F1 100, mAP 93.13.)
 
 
 Runs that were not submitted, on the holdout:
