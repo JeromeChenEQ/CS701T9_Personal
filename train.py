@@ -75,7 +75,9 @@ def parse_args():
     p.add_argument('--ema-decay', type=float, default=0.0,
                    help='also keep an exponential moving average of the trainable weights with this decay per '
                         'optimizer step, e.g. 0.9995 (0: off); validated next to the plain weights')
-    p.add_argument('--eval-every', type=int, default=4, help='validate every N epochs, and after the last one')
+    p.add_argument('--eval-every', type=int, default=4,
+                   help='validate every N epochs, and after the last one; 0: never (e.g. with --train-split full, '
+                        'whose training images include the holdout)')
     p.add_argument('--train-split', default='train',
                    help="split to train on: 'train' (our 85 %%, the holdout 'val' is validated) or 'full' (train + "
                         "holdout, all 9,392 images; validation on the holdout is then only a sanity check)")
@@ -370,7 +372,7 @@ def main():
     for epoch in range(first_epoch, args.epochs + 1):
         train_one_epoch(model, train_loader, optimizer, schedule, epoch, log_file, args.accum_steps,
                         args.label_smoothing, ema)
-        validate = epoch % args.eval_every == 0 or epoch == args.epochs
+        validate = args.eval_every > 0 and (epoch % args.eval_every == 0 or epoch == args.epochs)
         if validate:
             val, val_detections = evaluate(model, val_loader, args.data / 'detection' / 'instances_val.json')
             history.append({'epoch': epoch, 'task_weights': model.task_weights(), 'delta_m': delta_m(val), **val})
@@ -402,7 +404,7 @@ def main():
             torch.save(state, run_dir / 'checkpoint.tmp')
             (run_dir / 'checkpoint.tmp').replace(checkpoint_path)  # rename: a crash mid-save keeps the old one
     train_hours = (earlier_seconds + time.time() - start) / 3600
-    if first_epoch > args.epochs:  # resumed after the last epoch: its validation detections are not saved
+    if first_epoch > args.epochs and args.eval_every > 0:  # resumed after the last epoch: its detections are not saved
         val_detections = evaluate(model, val_loader, args.data / 'detection' / 'instances_val.json')[1]
 
     # Evaluate on test, once, if a labelled test split exists
@@ -416,9 +418,10 @@ def main():
     # Save
     summary = {'args': vars(args), 'parameters': parameters, 'trainable_parameters': trainable,
                'train_hours': train_hours, 'peak_gpu_memory_gb': peak_gb,
-               'val_history': history, 'val': history[-1], 'best': best, 'test': test}
+               'val_history': history, 'val': history[-1] if history else None, 'best': best, 'test': test}
     (run_dir / 'metrics.json').write_text(json.dumps(summary, indent=2, default=str))
-    (run_dir / 'predictions_val.json').write_text(json.dumps(val_detections))
+    if args.eval_every > 0:  # --eval-every 0: no validation, so no best.pt and no holdout detections
+        (run_dir / 'predictions_val.json').write_text(json.dumps(val_detections))
     if has_test:
         (run_dir / 'predictions_test.json').write_text(json.dumps(test_detections))
     torch.save(model.state_dict(), run_dir / 'model.pt')
