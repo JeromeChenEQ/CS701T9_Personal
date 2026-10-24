@@ -27,6 +27,8 @@ rescored by the class head (relative, α 4): val Δm +46.11.**
 | 14 | **#9's recipe retrained on train + holdout** (`--train-split full`, 9,392 images), 96 ep: **EMA weights of epoch 48** (`--save-epochs 48`), predicted while training; score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep48.zip` | 40.0 M / 127.5 M | ~12.9 h to epoch 48 | — ⁴ | — ⁴ | 96.63 | 47.14 | 74.34 | 96.84 | +41.97 |
 | 15 | **#14 finished: EMA weights of the last epoch, 96** (`model_ema.pt`, predicted on the GPU); score 0, NMS 0.8 ⁴ | `submission_val_dinov3_full_ep96.zip` | 40.0 M / 127.5 M | 26.05 h | — ⁴ | — ⁴ | 96.24 | 48.98 | 75.43 | 96.49 | +45.30 |
 | 16 | **#15 with boxes rescored by the class head**: score × (p(box class) / p(top class))^4, best 100 of 300 candidates per image; same weights, inference only ⁴ | `submission_val_dinov3_full_ep96_rescore4.zip` | 40.0 M / 127.5 M | 26.05 h | — ⁴ | — ⁴ | **96.24** | **49.41** | **75.85** | **96.49** | **+46.11** |
+| 17 | #7's recipe (85 % split) + **depthwise convs, LayerNorms and layer scales trained** (`--unfreeze-dw-norm`: 0.96 M at 2e-5, no weight decay) + LoRA r119, 96 ep: `best.pt` = EMA weights of epoch 92; score 0, NMS 0.8, rescoring α 4 | `submission_val_dinov3_dwnorm_rescore4.zip` | 39.8 M / 126.4 M | 27.18 h | 96.06 | 49.85 | 95.29 | 47.35 | 74.02 | 95.58 | +41.67 |
+| 18 | #10's **Cascade R-CNN** (LoRA r88) retrained on train + holdout (9,392 images), 96 ep, no validation (`--eval-every 0`): final EMA weights; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_cascade_full_ep96.zip` | 39.4 M / 127.0 M | 29.67 h | — ⁴ | — ⁴ | 95.81 | 48.65 | 75.27 | 96.07 | +44.44 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -207,6 +209,17 @@ In run order (score threshold: from run 1 on).
   predicted class's boxes untouched and helps, plateauing from α 4: +49.07 with 300 candidates per image (mAP 50.57
   → 51.02, AP75 55.40 → 55.96; 1000 candidates +49.11). On val with #15's weights: +45.30 → +46.11 (mAP 48.98 →
   49.41, AP50 75.43 → 75.85), the holdout gain (+0.86) carrying over. No parameters, one forward pass.
+- **Training the depthwise convs, norms and layer scales (submission 17), not adopted:** LoRA on the Linear layers
+  leaves ConvNeXt's per-channel parameters at their web-photo values; training them too (0.96 M, LoRA rank 125 →
+  119 to stay within 40 M) led run 7 by about +2 holdout Δm from epoch 28 to 52, but the lead was gone by the end:
+  best +46.86 (epoch 92) vs +46.67, and with the full inference recipe +48.95 vs +49.07 (mAP 50.94 vs 51.02). On
+  val, with rescoring, +41.67, level with run 7's final without rescoring (+41.69, submission 9) and so about 0.8
+  below it with rescoring; 10 % slower training. As with Cascade (submissions 10–12), a mid-run lead on the
+  holdout did not survive the full schedule.
+- **Cascade R-CNN on all 9,392 images (submission 18), not adopted:** with the same data, schedule and inference
+  recipe as submission 16, val Δm +44.44 vs +46.11 (−1.67; mAP 48.65 vs 49.41, AP50 75.27 vs 75.85, F1 95.81 vs
+  96.24), a larger gap than on the 85 % split (−0.44, submissions 11 vs 9). Three 512-wide stages leave LoRA rank
+  88 instead of 125, and the single 1024-wide box head with GIoU already localises well; no longer schedule tried.
 
 
 Runs that were not submitted, on the holdout:
