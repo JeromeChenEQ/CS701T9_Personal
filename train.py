@@ -32,6 +32,8 @@ def parse_args():
                    help='split every batch into this many forward/backward passes (less GPU memory, same update)')
     p.add_argument('--lr', type=float, default=1e-4)
     p.add_argument('--backbone-lr', type=float, help='for the trainable backbone parameters (default: --lr)')
+    p.add_argument('--lora-b-lr-ratio', type=float, default=1.0,
+                   help="LoRA+: learning rate of LoRA's B matrices relative to --backbone-lr (1: the same)")
     p.add_argument('--weight-decay', type=float, default=0.05)
     p.add_argument('--loss-weighting', default='sum', choices=['sum', 'kendall'],
                    help='sum: plain sum of the task losses; kendall: learned uncertainty weights (Kendall et al., 2018)')
@@ -279,6 +281,7 @@ def main():
     suffixes += [f'r{args.lora_rank}'] if args.adapt == 'lora' and args.lora_rank != 16 else []
     suffixes += [f'unfreeze{args.unfreeze_last}'] if args.unfreeze_last else []
     suffixes += ['dwnorm'] if args.unfreeze_dw_norm else []
+    suffixes += [f'lorab{args.lora_b_lr_ratio:g}'] if args.lora_b_lr_ratio != 1 else []
     suffixes += [f'ema{args.ema_decay:g}'] if args.ema_decay else []
     suffixes += [f'giou{args.giou_weight:g}'] if args.box_loss == 'giou' else []
     suffixes += [f'cascade{args.cascade_width}'] if args.detector == 'cascade' else []
@@ -318,8 +321,11 @@ def main():
     # Unfrozen depthwise convs / norms / layer scales: pretrained values, so the gentler --unfrozen-lr, and no weight
     # decay (it would pull norm weights and layer scales towards 0)
     dw_norm = {id(p) for p in depthwise_and_norm_params(model.backbone)} if args.unfreeze_dw_norm else set()
+    # LoRA+ (Hayou et al., 2024): the B matrices (LoRA.up, initialised at 0) at --lora-b-lr-ratio x --backbone-lr
+    lora_b = ({id(p) for name, p in model.backbone.named_parameters() if p.requires_grad and name.endswith('.up.weight')}
+              if args.lora_b_lr_ratio != 1 else set())
     backbone_params = [p for p in model.backbone.parameters()
-                       if p.requires_grad and id(p) not in unfrozen and id(p) not in dw_norm]
+                       if p.requires_grad and id(p) not in unfrozen and id(p) not in dw_norm and id(p) not in lora_b]
     no_decay = ('log_vars', 'fusion_weights')  # learned scalars: weight decay would pull them back to the plain model
     head_params = [p for name, p in model.named_parameters() if not name.startswith('backbone.') and name not in no_decay]
     groups = [{'params': backbone_params, 'lr': args.backbone_lr}, {'params': head_params}]
@@ -329,6 +335,11 @@ def main():
     if dw_norm:
         groups.append({'params': [p for p in model.backbone.parameters() if id(p) in dw_norm],
                        'lr': args.unfrozen_lr, 'weight_decay': 0.0})
+    if lora_b:
+        lora_b_params = [p for p in model.backbone.parameters() if id(p) in lora_b]
+        groups.append({'params': lora_b_params, 'lr': args.backbone_lr * args.lora_b_lr_ratio})
+        log(f'LoRA+: {len(lora_b_params)} B matrices ({sum(p.numel() for p in lora_b_params):,} values) at lr '
+            f'{args.backbone_lr * args.lora_b_lr_ratio:g}, the A matrices at {args.backbone_lr:g}', log_file)
     if model.log_vars is not None:
         groups.append({'params': [model.log_vars], 'lr': args.loss_weight_lr, 'weight_decay': 0.0})
     if model.fusion_weights is not None:
