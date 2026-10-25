@@ -41,14 +41,25 @@ class MoELoRA(nn.Module):
         return self.base(x) + self.scale * self.up(self.down(x) * gates)
 
 
-def add_lora_everywhere(backbone, rank):
+def add_lora_everywhere(backbone, rank, skip=()):
     """Freeze the backbone, then wrap every nn.Linear in it with LoRA of `rank`, alpha = 2 * rank (the same
-    scale 2 as the default rank-16 LoRA). For backbones without ViT blocks, e.g. the hierarchical SAM2 Hiera."""
+    scale 2 as the default rank-16 LoRA). For backbones without ViT blocks, e.g. the hierarchical SAM2 Hiera.
+    skip: name prefixes of submodules left without LoRA (e.g. stages that are trained in full)."""
     backbone.requires_grad_(False)
-    targets = [(parent, name, child) for parent in backbone.modules()
-               for name, child in parent.named_children() if isinstance(child, nn.Linear)]
+    targets = [(parent, name, child) for parent_name, parent in backbone.named_modules()
+               for name, child in parent.named_children() if isinstance(child, nn.Linear)
+               and not f'{parent_name}.{name}'.startswith(tuple(skip))]
     for parent, name, child in targets:  # collected first, so no LoRA wraps another LoRA's layers
         setattr(parent, name, LoRA(child, rank=rank, alpha=2 * rank))
+
+
+def early_stage_prefixes(backbone, stages):
+    """Name prefixes of a timm ConvNeXt's stem and first `stages` stages (DINOv3 ConvNeXt-B, stages 0-1: the stride-4
+    and stride-8 layers, 2.17 M parameters)."""
+    names = {name for name, _ in backbone.named_modules()}
+    if 'net.stages_0' not in names:
+        raise ValueError('--unfreeze-stages needs a ConvNeXt backbone (stem_*, stages_*)')
+    return tuple(n for n in ('net.stem_0', 'net.stem_1') if n in names) + tuple(f'net.stages_{i}' for i in range(stages))
 
 
 def depthwise_and_norm_params(backbone):

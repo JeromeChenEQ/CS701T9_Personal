@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from sarbench.adapters import add_adapters, add_lora_everywhere, depthwise_and_norm_params
+from sarbench.adapters import add_adapters, add_lora_everywhere, depthwise_and_norm_params, early_stage_prefixes
 from sarbench.backbones import HIERARCHICAL, build_backbone
 from sarbench.data import SARMultiTask, collate, to_original_xywh
 from sarbench.metrics import classification_metrics, detection_metrics
@@ -67,6 +67,9 @@ def parse_args():
     p.add_argument('--lora-rank', type=int, default=16, help='rank of the plain LoRA (alpha = 2 x rank)')
     p.add_argument('--lora-targets', default='attn', choices=['attn', 'all'],
                    help='attn: attn.qkv and attn.proj of every ViT block; all: every Linear layer of the backbone')
+    p.add_argument('--unfreeze-stages', type=int, default=0,
+                   help='ConvNeXt with --lora-targets all: train the stem and the first N stages in full (no LoRA there), '
+                        'at --unfrozen-lr; DINOv3 ConvNeXt-B, N=2: the stride-4/8 layers, 2.17 M')
     p.add_argument('--unfreeze-dw-norm', action='store_true',
                    help='also train the backbone\'s depthwise convs, LayerNorms and layer scales (DINOv3 ConvNeXt-B: '
                         '0.96 M), at --unfrozen-lr without weight decay')
@@ -125,7 +128,12 @@ def build_model(args, pretrained):
     backbone = build_backbone(args.backbone, pretrained=pretrained, drop_path=option('drop_path', 0.0))
     if args.adapt != 'full':
         if option('lora_targets', 'attn') == 'all':
-            add_lora_everywhere(backbone, option('lora_rank', 16))  # also freezes the backbone
+            # --unfreeze-stages N: the stem and the first N stages are trained in full instead, so no LoRA there
+            early = early_stage_prefixes(backbone, option('unfreeze_stages', 0)) if option('unfreeze_stages', 0) else ()
+            add_lora_everywhere(backbone, option('lora_rank', 16), skip=early)  # also freezes the backbone
+            for name, p in backbone.named_parameters():
+                if name.startswith(early or ('\0',)):
+                    p.requires_grad_(True)
         else:
             add_adapters(backbone, args.adapt, mlp=option('adapt_mlp', False),  # also freezes the backbone
                          unfreeze_last=option('unfreeze_last', 0), rank=option('lora_rank', 16))
@@ -281,6 +289,7 @@ def main():
     suffixes += [f'r{args.lora_rank}'] if args.adapt == 'lora' and args.lora_rank != 16 else []
     suffixes += [f'unfreeze{args.unfreeze_last}'] if args.unfreeze_last else []
     suffixes += ['dwnorm'] if args.unfreeze_dw_norm else []
+    suffixes += [f'stages{args.unfreeze_stages}'] if args.unfreeze_stages else []
     suffixes += [f'lorab{args.lora_b_lr_ratio:g}'] if args.lora_b_lr_ratio != 1 else []
     suffixes += [f'ema{args.ema_decay:g}'] if args.ema_decay else []
     suffixes += [f'giou{args.giou_weight:g}'] if args.box_loss == 'giou' else []
@@ -318,6 +327,9 @@ def main():
     if args.unfreeze_last:
         blocks = list(model.backbone.blocks)
         unfrozen = {id(p) for blk in blocks[len(blocks) - args.unfreeze_last:] for p in blk.parameters()}
+    if args.unfreeze_stages:  # the stem and first stages, trained in full
+        early = early_stage_prefixes(model.backbone, args.unfreeze_stages)
+        unfrozen |= {id(p) for name, p in model.backbone.named_parameters() if name.startswith(early)}
     # Unfrozen depthwise convs / norms / layer scales: pretrained values, so the gentler --unfrozen-lr, and no weight
     # decay (it would pull norm weights and layer scales towards 0)
     dw_norm = {id(p) for p in depthwise_and_norm_params(model.backbone)} if args.unfreeze_dw_norm else set()
