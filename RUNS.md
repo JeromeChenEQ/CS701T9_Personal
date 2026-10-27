@@ -30,6 +30,7 @@ rescored by the class head (relative, α 4): val Δm +46.11.**
 | 17 | #7's recipe (85 % split) + **depthwise convs, LayerNorms and layer scales trained** (`--unfreeze-dw-norm`: 0.96 M at 2e-5, no weight decay) + LoRA r119, 96 ep: `best.pt` = EMA weights of epoch 92; score 0, NMS 0.8, rescoring α 4 | `submission_val_dinov3_dwnorm_rescore4.zip` | 39.8 M / 126.4 M | 27.18 h | 96.06 | 49.85 | 95.29 | 47.35 | 74.02 | 95.58 | +41.67 |
 | 18 | #10's **Cascade R-CNN** (LoRA r88) retrained on train + holdout (9,392 images), 96 ep, no validation (`--eval-every 0`): final EMA weights; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_cascade_full_ep96.zip` | 39.4 M / 127.0 M | 29.67 h | — ⁴ | — ⁴ | 95.81 | 48.65 | 75.27 | 96.07 | +44.44 |
 | 19 | #16's recipe (all 9,392 images, no validation) with **LoRA+**: LoRA's B matrices at 4 × the A matrices' learning rate (`--lora-b-lr-ratio 4`), 96 ep: final EMA weights; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_loraplus_full_ep96.zip` | 40.0 M / 127.5 M | 25.71 h | — ⁴ | — ⁴ | 95.69 | 49.11 | 74.77 | 95.93 | +45.25 |
+| 20 | #16's recipe with the **stem and stages 0–1 trained in full** (`--unfreeze-stages 2`, 2.17 M at 2e-5, no LoRA there) and LoRA r120 on stages 2–3, 96 ep: final EMA weights; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_stages01_full_ep96.zip` | 39.9 M / 125.2 M | 24.76 h | — ⁴ | — ⁴ | 95.63 | 48.77 | 75.18 | 95.86 | +44.56 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -224,6 +225,11 @@ In run order (score threshold: from run 1 on).
 - **LoRA+ (submission 19), not adopted:** training LoRA's B matrices (initialised at 0) at 4 × the A matrices'
   learning rate (Hayou et al., 2024), with everything else as submission 16: val Δm +45.25 vs +46.11 (−0.86; F1
   95.69 vs 96.24, mAP 49.11 vs 49.41, AP50 74.77 vs 75.85).
+- **Early stages trained in full (submission 20), not adopted:** training ConvNeXt's stem and stages 0–1 (the
+  stride-4/8 layers, 2.17 M) in full instead of through LoRA, LoRA rank 125 → 120 on stages 2–3: val Δm +44.56 vs
+  +46.11 (−1.55; F1 95.63 vs 96.24, mAP 48.77 vs 49.41). Every change to submission 16's recipe on the full split
+  so far scored lower: Cascade −1.67, LoRA+ −0.86, early stages −1.55 (no seed repeats yet, so the spread of
+  #16's own recipe is unknown).
 
 
 Runs that were not submitted, on the holdout:
