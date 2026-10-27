@@ -1,5 +1,6 @@
 """The multi-task model: one shared backbone (a ViT, or a multi-scale one such as SAM2's Hiera) feeds a
 classification head and a Faster R-CNN detector."""
+import math
 from collections import OrderedDict
 
 import torch
@@ -143,6 +144,93 @@ class CascadeRoIHeads(nn.Module):
         return result
 
 
+def paired_iou(a, b):
+    """IoU of box a[i] with box b[i] (XYXY) -> [N]."""
+    lt, rb = torch.max(a[:, :2], b[:, :2]), torch.min(a[:, 2:], b[:, 2:])
+    inter = (rb - lt).clamp(min=0).prod(dim=1)
+    area = lambda x: (x[:, 2] - x[:, 0]).clamp(min=0) * (x[:, 3] - x[:, 1]).clamp(min=0)  # noqa: E731
+    return inter / (area(a) + area(b) - inter).clamp(min=1e-6)
+
+
+class GFLPredictor(nn.Module):
+    """Class scores (sigmoid, one per class, no background column) and, per box edge, logits over bins + 1
+    positions spanning [-edge_range, edge_range] x the RoI's width or height."""
+
+    def __init__(self, in_channels, num_classes, bins=16):
+        super().__init__()
+        self.cls_score = nn.Linear(in_channels, num_classes)
+        # focal-loss prior (Lin et al., 2017; as GFL): every class starts at probability 0.01, not 0.5, so the
+        # many background RoIs do not swamp the loss at the start
+        nn.init.constant_(self.cls_score.bias, -math.log((1 - 0.01) / 0.01))
+        self.bbox_pred = nn.Linear(in_channels, 4 * (bins + 1))  # class-agnostic
+
+    def forward(self, x):
+        return self.cls_score(x), self.bbox_pred(x)
+
+
+class GFLRoIHeads(RoIHeads):
+    """torchvision's RoIHeads (sampling, RoI pooling, two-layer box head) with Generalized Focal Loss (Li et al.,
+    NeurIPS 2020) outputs: each box edge is a distribution over bins + 1 offsets from the RoI's edge (Distribution
+    Focal Loss, the idea D-FINE builds on), and the class scores are trained to equal the predicted box's IoU with its
+    object (Quality Focal Loss), so well-localised boxes rank first. Losses as GFL: QFL (beta 2) normalised by the
+    positives, GIoU (weight 2) and DFL (weight 0.25) weighted by the positives' top class score. Inference: sigmoid
+    scores, then the class-agnostic boxes go through per-class NMS as in CascadeRoIHeads."""
+
+    def __init__(self, box_roi_pool, box_head, num_classes, bins=16, edge_range=0.5, beta=2.0, giou_weight=2.0,
+                 dfl_weight=0.25, **kwargs):
+        super().__init__(box_roi_pool, box_head, GFLPredictor(1024, num_classes, bins), **kwargs)
+        self.bins, self.edge_range = bins, edge_range
+        self.register_buffer('positions', torch.linspace(-edge_range, edge_range, bins + 1), persistent=False)
+        self.beta, self.giou_weight, self.dfl_weight = beta, giou_weight, dfl_weight
+
+    def decode(self, rois, edge_logits):
+        """RoIs [N, 4] and edge logits [N, 4, bins + 1] -> boxes [N, 4]: each edge moved by the expected offset."""
+        offsets = (edge_logits.softmax(dim=-1) * self.positions).sum(dim=-1)
+        size = (rois[:, 2:] - rois[:, :2]).repeat(1, 2)  # w, h, w, h
+        return rois + offsets * size
+
+    def forward(self, features, proposals, image_shapes, targets=None):
+        if self.training:
+            proposals, matched, labels, _ = self.select_training_samples(proposals, targets)
+            truth = [t['boxes'][m.clamp(min=0)] if len(t['boxes']) else torch.zeros_like(p)
+                     for t, m, p in zip(targets, matched, proposals)]
+        x = self.box_head(self.box_roi_pool(features, proposals, image_shapes))
+        cls, reg = self.box_predictor(x)
+        rois = torch.cat(proposals)
+        edges = reg.view(len(rois), 4, self.bins + 1)
+        boxes = self.decode(rois, edges)
+        if not self.training:
+            boxes = [clip_boxes_to_image(b, size) for b, size in zip(boxes.split([len(p) for p in proposals]), image_shapes)]
+            scores = torch.cat([cls.new_zeros(len(cls), 1), cls.sigmoid()], dim=1)  # a 0 background column
+            return CascadeRoIHeads.postprocess(self, boxes, scores.split([len(p) for p in proposals])), {}
+        labels, truth = torch.cat(labels), torch.cat(truth)
+        pos = torch.where(labels > 0)[0]
+        num_pos = max(len(pos), 1)
+        # QFL: the positives' target is their predicted box's IoU for the object's class, 0 elsewhere
+        quality = cls.new_zeros(cls.shape)
+        quality[pos, labels[pos] - 1] = paired_iou(boxes[pos].detach(), truth[pos])
+        prob = cls.sigmoid()
+        qfl = F.binary_cross_entropy_with_logits(cls, quality, reduction='none') * (prob - quality).abs().pow(self.beta)
+        losses = {'loss_classifier': qfl.sum() / num_pos}
+        if len(pos):
+            weight = prob.detach()[pos].max(dim=1).values  # as GFL: box losses weighted by the top class score
+            norm = weight.sum().clamp(min=1e-6)
+            giou = generalized_box_iou_loss(boxes[pos], truth[pos], reduction='none')
+            # DFL: the target offset in bin units, spread over its two neighbouring bins
+            size = (rois[pos, 2:] - rois[pos, :2]).repeat(1, 2)
+            target = ((truth[pos] - rois[pos]) / size.clamp(min=1e-6) + self.edge_range) / (2 * self.edge_range) * self.bins
+            target = target.clamp(0, self.bins - 1e-4)
+            left = target.floor().long()
+            logp = edges[pos].log_softmax(dim=-1)
+            dfl = -(logp.gather(-1, left[..., None])[..., 0] * (left + 1 - target)
+                    + logp.gather(-1, (left + 1)[..., None])[..., 0] * (target - left)).mean(dim=1)
+            losses['loss_box_reg'] = self.giou_weight * (giou * weight).sum() / norm
+            losses['loss_dfl'] = self.dfl_weight * (dfl * weight).sum() / norm
+        else:
+            losses['loss_box_reg'] = losses['loss_dfl'] = reg.sum() * 0
+        return [], losses
+
+
 class SimpleFeaturePyramid(nn.Module):
     """ViTDet neck (Li et al., 2022): the single stride-16 ViT map -> 256-channel maps at strides 4, 8, 16, 32, 64."""
 
@@ -230,6 +318,11 @@ class MultiTaskModel(nn.Module):
         if detector == 'cascade':
             self.roi_heads = CascadeRoIHeads(roi_pool, num_classes, width=cascade_width, box_loss=box_loss,
                                              score_thresh=score_thresh)
+        elif detector == 'gfl':  # GFL outputs on the same RoI head (its box loss is GIoU + DFL, whatever box_loss)
+            self.roi_heads = GFLRoIHeads(
+                roi_pool, TwoMLPHead(256 * 7 * 7, 1024), num_classes,
+                fg_iou_thresh=0.5, bg_iou_thresh=0.5, batch_size_per_image=512, positive_fraction=0.25,
+                bbox_reg_weights=None, score_thresh=score_thresh, nms_thresh=0.5, detections_per_img=100)
         else:
             self.roi_heads = {'smooth_l1': RoIHeads, 'giou': GIoURoIHeads}[box_loss](
                 roi_pool, TwoMLPHead(256 * 7 * 7, 1024), FastRCNNPredictor(1024, num_classes + 1),  # + 1: background
