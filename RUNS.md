@@ -32,6 +32,7 @@ rescored by the class head (relative, α 4): val Δm +46.11.**
 | 19 | #16's recipe (all 9,392 images, no validation) with **LoRA+**: LoRA's B matrices at 4 × the A matrices' learning rate (`--lora-b-lr-ratio 4`), 96 ep: final EMA weights; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_loraplus_full_ep96.zip` | 40.0 M / 127.5 M | 25.71 h | — ⁴ | — ⁴ | 95.69 | 49.11 | 74.77 | 95.93 | +45.25 |
 | 20 | #16's recipe with the **stem and stages 0–1 trained in full** (`--unfreeze-stages 2`, 2.17 M at 2e-5, no LoRA there) and LoRA r120 on stages 2–3, 96 ep: final EMA weights; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_stages01_full_ep96.zip` | 39.9 M / 125.2 M | 24.76 h | — ⁴ | — ⁴ | 95.63 | 48.77 | 75.18 | 95.86 | +44.56 |
 | 21 | #16's recipe with **GFL outputs on the RoI box head** (`--detector gfl`: each box edge a distribution over 17 offsets, DFL + GIoU; IoU-aware sigmoid class scores, QFL), LoRA r125, 96 ep: **EMA weights of epoch 48**, predicted while training; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_gfl_full_ep48.zip` | 40.0 M / 127.6 M | ~13 h to epoch 48 | — ⁴ | — ⁴ | 95.32 | 47.67 | 72.17 | 95.58 | +42.29 |
+| 22 | #21 finished: **GFL box head, final EMA weights (epoch 96)**; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_gfl_full_ep96.zip` | 40.0 M / 127.6 M | 25.9 h | — ⁴ | — ⁴ | 95.23 | 49.50 | 75.05 | 95.51 | +45.75 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -235,6 +236,11 @@ In run order (score threshold: from run 1 on).
   rescoring, about +42.8 with it): mAP level (47.67 vs 47.14 without rescoring, about 47.6 with) but AP50 2.2
   lower (72.17 vs 74.34), so tighter boxes at the strict IoU thresholds and fewer at 0.5; F1 1.3 lower (95.32 vs
   96.63) although the class head is unchanged (the QFL / DFL losses train the shared LoRA backbone differently).
+- **GFL box head, finished (submission 22), a tie:** val Δm +45.75 vs +46.11 for submission 16 (−0.36), with the
+  highest mAP of any R-CNN-family model (49.50 vs 49.41) despite a lower AP50 (75.05 vs 75.85), i.e. tighter boxes
+  at strict IoU, as at epoch 48; the gap is all classification (F1 95.23 vs 96.24). Distribution-based edges help
+  localisation in a two-stage detector only marginally, so most of D-FINE + DEIM's gain (val about +60) comes
+  from the rest of its design and training.
 
 
 Runs that were not submitted, on the holdout:
