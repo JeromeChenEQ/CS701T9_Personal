@@ -91,6 +91,12 @@ def parse_args():
     p.add_argument('--save-epochs', type=int, nargs='*', default=[],
                    help='also save the weights after these epochs: model_ep<N>.pt and, with --ema-decay, '
                         'model_ema_ep<N>.pt (for picking epochs without a holdout)')
+    p.add_argument('--init-weights', type=Path,
+                   help="start from these trained weights (e.g. a run's model_ema.pt) wherever names and shapes match; "
+                        'the rest (e.g. a new box output layer) keeps its fresh initialisation')
+    p.add_argument('--freeze-backbone-cls', action='store_true',
+                   help='with --init-weights: freeze the backbone (with its LoRA) and the classification head, so the '
+                        'class predictions stay those of the loaded weights and only the detector trains')
     p.add_argument('--checkpoint-every', type=int, default=1,
                    help='save checkpoint.pt (what --resume continues from) every N epochs, and at every validation')
     p.add_argument('--workers', type=int, default=8)
@@ -297,6 +303,8 @@ def main():
     suffixes += [f'giou{args.giou_weight:g}'] if args.box_loss == 'giou' else []
     suffixes += [f'cascade{args.cascade_width}'] if args.detector == 'cascade' else []
     suffixes += ['gfl'] if args.detector == 'gfl' else []
+    suffixes += ['init'] if args.init_weights else []
+    suffixes += ['detonly'] if args.freeze_backbone_cls else []
     suffixes += [args.train_split] if args.train_split != 'train' else []
     suffixes += [f'st{args.score_thresh:g}'] if args.score_thresh != 0.05 else []
     run_dir = run_dir.with_name('_'.join([run_dir.name, *suffixes]))
@@ -313,7 +321,20 @@ def main():
     has_test = (args.data / 'classification' / 'test.csv').exists()  # course data: no labelled test split
     test_loader = make_loader(args, 'test') if has_test else None
 
-    model = build_model(args, pretrained=args.init == 'pretrained').cuda()
+    model = build_model(args, pretrained=args.init == 'pretrained')
+    if args.init_weights:  # start from a trained run's weights wherever names and shapes match
+        start = torch.load(args.init_weights, map_location='cpu')
+        own = model.state_dict()
+        loaded = {k: v for k, v in start.items() if k in own and own[k].shape == v.shape}
+        model.load_state_dict(loaded, strict=False)
+        new = [k for k in own if k not in loaded]
+        log(f'started from {args.init_weights}: {len(loaded)} of {len(own)} tensors loaded; not loaded (new or '
+            f'reshaped): {", ".join(new) if new else "none"}', log_file)
+    if args.freeze_backbone_cls:  # keep the backbone (with its LoRA) and the class head exactly as loaded
+        model.backbone.requires_grad_(False)
+        model.cls_head.requires_grad_(False)
+        log('frozen: the backbone with its LoRA and the classification head; training the detector only', log_file)
+    model = model.cuda()
     parameters = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f'parameters: {parameters:,} total, {trainable:,} trainable', log_file)
