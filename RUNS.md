@@ -33,6 +33,8 @@ rescored by the class head (relative, α 4): val Δm +46.11.**
 | 20 | #16's recipe with the **stem and stages 0–1 trained in full** (`--unfreeze-stages 2`, 2.17 M at 2e-5, no LoRA there) and LoRA r120 on stages 2–3, 96 ep: final EMA weights; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_stages01_full_ep96.zip` | 39.9 M / 125.2 M | 24.76 h | — ⁴ | — ⁴ | 95.63 | 48.77 | 75.18 | 95.86 | +44.56 |
 | 21 | #16's recipe with **GFL outputs on the RoI box head** (`--detector gfl`: each box edge a distribution over 17 offsets, DFL + GIoU; IoU-aware sigmoid class scores, QFL), LoRA r125, 96 ep: **EMA weights of epoch 48**, predicted while training; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_gfl_full_ep48.zip` | 40.0 M / 127.6 M | ~13 h to epoch 48 | — ⁴ | — ⁴ | 95.32 | 47.67 | 72.17 | 95.58 | +42.29 |
 | 22 | #21 finished: **GFL box head, final EMA weights (epoch 96)**; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_gfl_full_ep96.zip` | 40.0 M / 127.6 M | 25.9 h | — ⁴ | — ⁴ | 95.23 | 49.50 | 75.05 | 95.51 | +45.75 |
+| 23 | **#16's recipe with seed 1** (`--seed 1`; everything else as #14–16): EMA weights of epoch 48 ⁴ | `submission_val_full_seed1_ep48.zip` | 40.0 M / 127.5 M | ~13 h to epoch 48 | — ⁴ | — ⁴ | 95.87 | 47.25 | 74.03 | 96.07 | +41.78 |
+| 24 | #23 finished: final EMA weights (epoch 96) ⁴ | `submission_val_full_seed1_ep96.zip` | 40.0 M / 127.5 M | 25.79 h | — ⁴ | — ⁴ | 95.60 | 48.97 | 75.35 | 95.79 | +44.92 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -241,6 +243,11 @@ In run order (score threshold: from run 1 on).
   at strict IoU, as at epoch 48; the gap is all classification (F1 95.23 vs 96.24). Distribution-based edges help
   localisation in a two-stage detector only marginally, so most of D-FINE + DEIM's gain (val about +60) comes
   from the rest of its design and training.
+- **Seed variation of the best recipe (submissions 16 and 24):** #16's recipe with seed 0 and seed 1 gives val Δm
+  +46.11 and +44.92, **+45.52 ± 0.84** (mean ± std of 2 seeds; F1 95.92 ± 0.45, mAP 49.19 ± 0.31, AP50 75.60 ±
+  0.35). So #16 is about 0.6 above its recipe's mean, and the variants scored against it are within about 1.3 std
+  of the mean: GFL head +45.75 and LoRA+ +45.25 are ties, early stages +44.56 and Cascade +44.44 at most weakly
+  worse. None of them gives a measurable gain; single-seed differences below about 1.5 Δm are not conclusive.
 
 
 Runs that were not submitted, on the holdout:
