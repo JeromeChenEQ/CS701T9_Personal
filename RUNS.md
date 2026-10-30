@@ -35,6 +35,7 @@ rescored by the class head (relative, α 4): val Δm +46.11.**
 | 22 | #21 finished: **GFL box head, final EMA weights (epoch 96)**; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_gfl_full_ep96.zip` | 40.0 M / 127.6 M | 25.9 h | — ⁴ | — ⁴ | 95.23 | 49.50 | 75.05 | 95.51 | +45.75 |
 | 23 | **#16's recipe with seed 1** (`--seed 1`; everything else as #14–16): EMA weights of epoch 48 ⁴ | `submission_val_full_seed1_ep48.zip` | 40.0 M / 127.5 M | ~13 h to epoch 48 | — ⁴ | — ⁴ | 95.87 | 47.25 | 74.03 | 96.07 | +41.78 |
 | 24 | #23 finished: final EMA weights (epoch 96) ⁴ | `submission_val_full_seed1_ep96.zip` | 40.0 M / 127.5 M | 25.79 h | — ⁴ | — ⁴ | 95.60 | 48.97 | 75.35 | 95.79 | +44.92 |
+| 25 | **#16's weights, backbone (with LoRA) and class head frozen, detector retrained with GFL outputs** (`--init-weights` #16's `model_ema.pt`, `--freeze-backbone-cls`, `--detector gfl`), 96 ep: EMA weights of epoch 48 ⁴ | `submission_val_from16_gfl_detonly_ep48.zip` | 17.4 M / 127.6 M | ~8.5 h to epoch 48 | — ⁴ | — ⁴ | 96.24 | 48.72 | 74.88 | 96.49 | +44.79 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -248,6 +249,13 @@ In run order (score threshold: from run 1 on).
   0.35). So #16 is about 0.6 above its recipe's mean, and the variants scored against it are within about 1.3 std
   of the mean: GFL head +45.75 and LoRA+ +45.25 are ties, early stages +44.56 and Cascade +44.44 at most weakly
   worse. None of them gives a measurable gain; single-seed differences below about 1.5 Δm are not conclusive.
+- **GFL detector on #16's frozen features (submission 25), not adopted:** to keep #16's classification and add
+  GFL's detection, #16's backbone and class head were frozen and only the detector (neck, RPN, box head with GFL
+  outputs; 17.4 M trainable) retrained from #16's weights. Classification stayed exactly #16's (F1 96.24, accuracy
+  96.49), but detection fell to mAP 48.72 (AP50 74.88), below both #16 (49.41) and the full GFL run (49.50): GFL's
+  tighter boxes need the backbone to adapt with them, which is also what costs that run its classification.
+  Training losses were flat from epoch 8, the new output layer adapting within 2 epochs; 14.8 images/s (1.55 ×
+  faster, no backward pass through the backbone).
 
 
 Runs that were not submitted, on the holdout:
