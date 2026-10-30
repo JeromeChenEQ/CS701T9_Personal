@@ -36,6 +36,7 @@ rescored by the class head (relative, α 4): val Δm +46.11.**
 | 23 | **#16's recipe with seed 1** (`--seed 1`; everything else as #14–16): EMA weights of epoch 48 ⁴ | `submission_val_full_seed1_ep48.zip` | 40.0 M / 127.5 M | ~13 h to epoch 48 | — ⁴ | — ⁴ | 95.87 | 47.25 | 74.03 | 96.07 | +41.78 |
 | 24 | #23 finished: final EMA weights (epoch 96) ⁴ | `submission_val_full_seed1_ep96.zip` | 40.0 M / 127.5 M | 25.79 h | — ⁴ | — ⁴ | 95.60 | 48.97 | 75.35 | 95.79 | +44.92 |
 | 25 | **#16's weights, backbone (with LoRA) and class head frozen, detector retrained with GFL outputs** (`--init-weights` #16's `model_ema.pt`, `--freeze-backbone-cls`, `--detector gfl`), 96 ep: EMA weights of epoch 48 ⁴ | `submission_val_from16_gfl_detonly_ep48.zip` | 17.4 M / 127.6 M | ~8.5 h to epoch 48 | — ⁴ | — ⁴ | 96.24 | 48.72 | 74.88 | 96.49 | +44.79 |
+| 26 | #25 finished: final EMA weights (epoch 96) ⁴ | `submission_val_from16_gfl_detonly_ep96.zip` | 17.4 M / 127.6 M | 16.94 h | — ⁴ | — ⁴ | 96.24 | 48.52 | 74.65 | 96.49 | +44.42 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -255,7 +256,8 @@ In run order (score threshold: from run 1 on).
   96.49), but detection fell to mAP 48.72 (AP50 74.88), below both #16 (49.41) and the full GFL run (49.50): GFL's
   tighter boxes need the backbone to adapt with them, which is also what costs that run its classification.
   Training losses were flat from epoch 8, the new output layer adapting within 2 epochs; 14.8 images/s (1.55 ×
-  faster, no backward pass through the backbone).
+  faster, no backward pass through the backbone). Its final weights (submission 26) do slightly worse still (mAP
+  48.52, +44.42): the frozen-feature detector overfits a little with more epochs.
 
 
 Runs that were not submitted, on the holdout:
