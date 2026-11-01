@@ -3,9 +3,8 @@
 The models submitted to the Codabench Phase 1 (val) leaderboard, with their settings, holdout results and val
 leaderboard results. All were trained on PC 1 (see [Compute](#compute)), one GPU per run.
 
-**Best so far: DINOv3 ConvNeXt-B with LoRA rank 125 on all layers, GIoU box loss, label smoothing 0.1, EMA,
-retrained on train + holdout (all 9,392 images) for 96 epochs, final EMA weights; inference: score 0, NMS 0.8, boxes
-rescored by the class head (relative, α 4): val Δm +46.11.**
+**Best so far (this repo): #16's recipe trained for 192 epochs on all 9,392 images: val Δm +47.92 at epoch 144
+(submission 27) and +47.80 with the final weights (submission 28), vs +45.52 ± 0.84 for the 96-epoch recipe.**
 
 ## Results
 
@@ -36,6 +35,9 @@ rescored by the class head (relative, α 4): val Δm +46.11.**
 | 23 | **#16's recipe with seed 1** (`--seed 1`; everything else as #14–16): EMA weights of epoch 48 ⁴ | `submission_val_full_seed1_ep48.zip` | 40.0 M / 127.5 M | ~13 h to epoch 48 | — ⁴ | — ⁴ | 95.87 | 47.25 | 74.03 | 96.07 | +41.78 |
 | 24 | #23 finished: final EMA weights (epoch 96) ⁴ | `submission_val_full_seed1_ep96.zip` | 40.0 M / 127.5 M | 25.79 h | — ⁴ | — ⁴ | 95.60 | 48.97 | 75.35 | 95.79 | +44.92 |
 | 25 | **#16's weights, backbone (with LoRA) and class head frozen, detector retrained with GFL outputs** (`--init-weights` #16's `model_ema.pt`, `--freeze-backbone-cls`, `--detector gfl`), 96 ep: EMA weights of epoch 48 ⁴ | `submission_val_from16_gfl_detonly_ep48.zip` | 17.4 M / 127.6 M | ~8.5 h to epoch 48 | — ⁴ | — ⁴ | 96.24 | 48.72 | 74.88 | 96.49 | +44.79 |
+| 26 | #25 finished: final EMA weights (epoch 96) ⁴ | `submission_val_from16_gfl_detonly_ep96.zip` | 17.4 M / 127.6 M | 16.94 h | — ⁴ | — ⁴ | 96.24 | 48.52 | 74.65 | 96.49 | +44.42 |
+| 27 | **#16's recipe for 192 epochs** (`--epochs 192`, seed 0; all 9,392 images, no validation): EMA weights of epoch 144 (`--save-epochs 96 144`), predicted while training; score 0, NMS 0.8, rescoring α 4 ⁴ | `submission_val_full_e192_ep144.zip` | 40.0 M / 127.5 M | ~38.5 h to epoch 144 | — ⁴ | — ⁴ | 95.86 | **50.46** | 76.13 | 96.07 | **+47.92** |
+| 28 | #27 finished: final EMA weights (epoch 192), predicted on the GPU ⁴ | `submission_val_full_e192_ep192.zip` | 40.0 M / 127.5 M | 51.55 h | — ⁴ | — ⁴ | 96.08 | 50.34 | **76.55** | 96.28 | +47.80 |
 
 All values in %. Limits: 130 M total, 40 M trainable. Δm is relative to the reference ViT-B/16 + LoRA on val
 (macro-F1 93.31, mAP 26.13): `Δm = ½ [(F1 − 93.31) / 93.31 + (mAP − 26.13) / 26.13] × 100 %`.
@@ -255,7 +257,13 @@ In run order (score threshold: from run 1 on).
   96.49), but detection fell to mAP 48.72 (AP50 74.88), below both #16 (49.41) and the full GFL run (49.50): GFL's
   tighter boxes need the backbone to adapt with them, which is also what costs that run its classification.
   Training losses were flat from epoch 8, the new output layer adapting within 2 epochs; 14.8 images/s (1.55 ×
-  faster, no backward pass through the backbone).
+  faster, no backward pass through the backbone). Its final weights (submission 26) do slightly worse still (mAP
+  48.52, +44.42): the frozen-feature detector overfits a little with more epochs.
+- **A longer schedule helps (submissions 27–28):** #16's recipe for 192 instead of 96 epochs gives val Δm +47.92
+  (epoch 144) and +47.80 (final), +2.3 above the 96-epoch recipe's mean (+45.52 ± 0.84, about 2.7 std), all from
+  detection (mAP 50.34–50.46 vs 49.19 ± 0.31; AP50 up to 76.55). The 85 %-split run's holdout plateau (epochs 88–108
+  of 108) came from the learning rate decaying, not from the model saturating: a longer cosine schedule spends more
+  epochs at a useful learning rate. Most of the gain is there by epoch 144 (three quarters of the schedule).
 
 
 Runs that were not submitted, on the holdout:
